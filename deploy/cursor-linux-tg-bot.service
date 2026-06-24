@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram bridge to Cursor local agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/opt/cursor-linux-tg-bot
+EnvironmentFile=/opt/cursor-linux-tg-bot/.env
+ExecStart=/opt/cursor-linux-tg-bot/.venv/bin/cursor-linux-tg-bot -c /opt/cursor-linux-tg-bot/config.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

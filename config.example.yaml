@@ -1,0 +1,31 @@
+# Скопируйте в config.yaml и заполните значения.
+# Секреты можно задавать через переменные окружения: ${TELEGRAM_BOT_TOKEN}
+
+telegram:
+  token: ${TELEGRAM_BOT_TOKEN}
+  # Ваш numeric user id из @userinfobot — только эти пользователи смогут писать боту
+  allowed_user_ids:
+    - 123456789
+
+cursor:
+  api_key: ${CURSOR_API_KEY}
+  model: composer-2.5
+  # Рабочая директория на Linux-сервере, которой управляет агент
+  workspace: /home/user
+  # agent — выполняет команды; plan — сначала план без изменений
+  mode: agent
+  # Пустой список = только inline-настройки SDK (без .cursor/rules из окружения)
+  setting_sources: []
+
+bot:
+  welcome_message: |
+    Привет! Я прокси к локальному Cursor Agent на этом сервере.
+    Просто напишите задачу — агент выполнит её на Linux.
+    /new — новая сессия, /mode agent|plan, /status — настройки.
+  system_prefix: |
+    Пользователь управляет этим Linux-сервером через Telegram.
+    Выполняй запросы на этой машине. Кратко отвечай по-русски.
+  max_reply_length: 4000
+  stream_edit_interval_sec: 2.0
+
+sessions_dir: ./data/sessions
