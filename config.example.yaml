@@ -11,7 +11,7 @@ cursor:
   api_key: ${CURSOR_API_KEY}
   model: composer-2.5
   # Рабочая директория на Linux-сервере, которой управляет агент
-  workspace: /home/user
+  workspace: /root/cursor-linux-tg-bot
   # agent — выполняет команды; plan — сначала план без изменений
   mode: agent
   # Пустой список = только inline-настройки SDK (без .cursor/rules из окружения)
@@ -28,4 +28,5 @@ bot:
   max_reply_length: 4000
   stream_edit_interval_sec: 2.0
 
-sessions_dir: ./data/sessions
+# Для systemd после install.sh: /var/lib/cursor-linux-tg-bot/sessions
+sessions_dir: /var/lib/cursor-linux-tg-bot/sessions

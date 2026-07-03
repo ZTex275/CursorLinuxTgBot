@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sys
 import textwrap
 from pathlib import Path
 
@@ -178,7 +179,11 @@ class TelegramCursorBot:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Telegram → Cursor local agent bridge")
+    if sys.platform != "linux":
+        print("cursor-linux-tg-bot работает только на Linux.", file=sys.stderr)
+        sys.exit(1)
+
+    parser = argparse.ArgumentParser(description="Telegram → Cursor local agent bridge (Linux only)")
     parser.add_argument(
         "-c",
         "--config",

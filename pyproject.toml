@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "Telegram bot that forwards messages to a local Cursor agent on Linux"
 readme = "README.md"
 requires-python = ">=3.11"
+classifiers = [
+    "Operating System :: POSIX :: Linux",
+    "Environment :: Console",
+    "Topic :: System :: Systems Administration",
+]
 dependencies = [
     "cursor-sdk>=0.1.8",
     "python-telegram-bot>=21.6",

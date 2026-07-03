@@ -1,127 +1,196 @@
 # Cursor Linux Telegram Bot
 
-Тонкий мост: **Telegram → Cursor SDK (локальный агент)** на Linux-сервере. Полноценный Telegram-бот не нужен — достаточно конфига и нескольких переменных окружения.
+Управляйте Linux-сервером из Telegram: сообщения уходят в локальный **Cursor Agent**, ответы возвращаются в чат.
 
-## Почему не только Cursor Automations?
+Проект рассчитан **только на Linux**. Установка — один скрипт, автозапуск — через **systemd**.
 
-| Способ | Telegram | Управление Linux |
-|--------|----------|------------------|
-| **Этот проект (SDK)** | ✅ | ✅ локальный агент на сервере |
-| Cursor Automations | ❌ (есть Slack, webhook, cron) | ⚠️ cloud / webhook, не «просто Telegram» |
-| Cursor CLI (`agent -p`) | ⚠️ нужен свой wrapper | ✅ |
-
-Cursor Automations можно подключить через **webhook** (бот шлёт HTTP на automation URL), но для диалога с Linux удобнее **Cursor SDK** — он держит сессию, стримит ответ и запускает команды на машине.
-
-## Быстрый старт (Linux)
-
-### 1. Cursor на сервере
-
-```bash
-# CLI (нужен для bridge SDK)
-curl https://cursor.com/install -fsSL | bash
-agent login
-# или export CURSOR_API_KEY=cursor_...  # https://cursor.com/dashboard/integrations
+```
+Telegram  →  cursor-linux-tg-bot  →  Cursor SDK  →  shell / файлы на сервере
 ```
 
-### 2. Telegram-бот
+## Возможности
 
-1. Создайте бота у [@BotFather](https://t.me/BotFather), получите токен.
-2. Узнайте свой user id у [@userinfobot](https://t.me/userinfobot).
+- Диалог с Cursor Agent с сохранением сессии между сообщениями
+- Потоковые ответы в Telegram (обновление статуса по ходу работы)
+- Whitelist пользователей Telegram
+- Режимы `agent` (выполняет команды) и `plan` (только план)
+- Автозапуск при загрузке системы
 
-### 3. Установка
+## Что понадобится
+
+| Компонент | Где взять |
+|-----------|-----------|
+| Linux с systemd | Ubuntu, Debian, Fedora и др. |
+| Python 3.11+ | Ставится скриптом `install.sh` |
+| [Cursor API key](https://cursor.com/dashboard/integrations) | `cursor_...` |
+| [Cursor Agent CLI](https://cursor.com/docs/cli/overview) | Ставится скриптом, если нет |
+| Telegram-бот | [@BotFather](https://t.me/BotFather) |
+| Ваш Telegram user id | [@userinfobot](https://t.me/userinfobot) |
+
+## Быстрая установка
 
 ```bash
-git clone <repo> /opt/cursor-linux-tg-bot
-cd /opt/cursor-linux-tg-bot
+git clone https://github.com/ZTex275/CursorLinuxTgBot.git
+cd CursorLinuxTgBot
+chmod +x install.sh uninstall.sh
+sudo ./install.sh
+```
+
+Скрипт:
+
+1. Проверит, что ОС — Linux
+2. Установит Python и зависимости
+3. При необходимости поставит Cursor CLI
+4. Развернёт приложение в `/opt/cursor-linux-tg-bot`
+5. Создаст конфиг и секреты в `/etc/cursor-linux-tg-bot/`
+6. Зарегистрирует systemd-сервис и **включит автозагрузку**
+
+Во время установки нужно ввести токен бота, API key Cursor, свой Telegram id и рабочую директорию агента.
+
+### Установка без вопросов (для скриптов)
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456:ABC..."
+export CURSOR_API_KEY="cursor_..."
+export ALLOWED_USER_ID="123456789"
+export WORKSPACE="/home/myuser"
+sudo -E ./install.sh
+```
+
+Другой пользователь сервиса:
+
+```bash
+sudo SERVICE_USER=deploy ./install.sh
+```
+
+## Структура после установки
+
+```
+/opt/cursor-linux-tg-bot/          # код и venv
+/etc/cursor-linux-tg-bot/
+  env                              # TELEGRAM_BOT_TOKEN, CURSOR_API_KEY
+  config.yaml                      # основные настройки
+/var/lib/cursor-linux-tg-bot/
+  sessions/                        # id сессий Cursor по чатам
+```
+
+## Управление сервисом
+
+```bash
+sudo systemctl status cursor-linux-tg-bot    # статус
+sudo journalctl -u cursor-linux-tg-bot -f    # логи в реальном времени
+sudo systemctl restart cursor-linux-tg-bot   # перезапуск
+sudo systemctl stop cursor-linux-tg-bot      # остановка
+```
+
+Удаление:
+
+```bash
+sudo ./uninstall.sh
+```
+
+## Команды в Telegram
+
+| Команда | Действие |
+|---------|----------|
+| `/start` | Приветствие и краткая справка |
+| `/new` | Новая сессия Cursor (сброс контекста) |
+| `/mode agent` | Агент выполняет команды и меняет файлы |
+| `/mode plan` | Только планирование, без изменений |
+| `/status` | Текущие workspace, model и mode |
+| Любой текст | Задача для Cursor Agent на сервере |
+
+## Конфигурация
+
+Основной файл: `/etc/cursor-linux-tg-bot/config.yaml`  
+Секреты: `/etc/cursor-linux-tg-bot/env`
+
+Пример — в репозитории: [`config.example.yaml`](config.example.yaml).
+
+```yaml
+telegram:
+  token: ${TELEGRAM_BOT_TOKEN}
+  allowed_user_ids:
+    - 123456789          # только эти пользователи
+
+cursor:
+  api_key: ${CURSOR_API_KEY}
+  model: composer-2.5
+  workspace: /home/myuser   # каталог, где агент работает
+  mode: agent               # agent | plan
+  setting_sources: []       # [] — без .cursor/rules; ["project"] — подхватить правила
+
+bot:
+  system_prefix: |          # добавляется к каждому сообщению
+    Пользователь управляет Linux-сервером через Telegram.
+```
+
+После правки конфига:
+
+```bash
+sudo systemctl restart cursor-linux-tg-bot
+```
+
+### Подключить `.cursor/rules` и MCP
+
+Если в `workspace` лежат правила и MCP-конфиги Cursor:
+
+```yaml
+cursor:
+  workspace: /home/myuser/myproject
+  setting_sources:
+    - project
+    - user
+```
+
+## Безопасность
+
+Cursor Agent может **запускать shell-команды** и **изменять файлы** в `workspace`. Это полноценный доступ к серверу в рамках выбранной директории.
+
+Рекомендации:
+
+- Обязательно заполните `allowed_user_ids` — иначе бот откроют посторонние
+- Сервис работает от обычного пользователя Linux, не от root
+- Для разведки без изменений используйте `mode: plan`
+- Ограничьте права пользователя сервиса по минимуму
+
+## Локальный запуск (без systemd)
+
+Для отладки на Linux-машине:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
 cp config.example.yaml config.yaml
 cp .env.example .env
-# заполните TELEGRAM_BOT_TOKEN и CURSOR_API_KEY в .env
-# отредактируйте config.yaml: allowed_user_ids, workspace
-```
+# заполните .env
 
-### 4. Запуск
-
-```bash
-source .env
+set -a && source .env && set +a
 cursor-linux-tg-bot -c config.yaml
 ```
 
-### 5. systemd (опционально)
+На Windows бот **не запускается** — при старте проверяется `sys.platform == "linux"`.
+
+## Устранение неполадок
+
+| Симптом | Что проверить |
+|---------|---------------|
+| Сервис не стартует | `sudo journalctl -u cursor-linux-tg-bot -n 50 --no-pager` |
+| «Cursor не запустился» | `CURSOR_API_KEY` в `/etc/cursor-linux-tg-bot/env` |
+| | `sudo -u USER agent login` или `agent --version` |
+| Бот не отвечает | Ваш id в `allowed_user_ids` |
+| | Токен бота в `env` |
+| `agent: command not found` | `sudo -u USER bash -c 'curl -fsSL https://cursor.com/install \| bash'` |
+| Долгий ответ | Один запрос на чат; дождитесь или `/new` |
+
+Проверка от имени пользователя сервиса:
 
 ```bash
-sudo cp deploy/cursor-linux-tg-bot.service /etc/systemd/system/
-# поправьте User и пути в unit-файле
-sudo systemctl daemon-reload
-sudo systemctl enable --now cursor-linux-tg-bot
+sudo -u myuser bash -lc 'source /etc/cursor-linux-tg-bot/env && /opt/cursor-linux-tg-bot/.venv/bin/cursor-linux-tg-bot -c /etc/cursor-linux-tg-bot/config.yaml'
 ```
 
-## config.yaml
+## Лицензия
 
-Основные поля:
-
-- `telegram.token` — `${TELEGRAM_BOT_TOKEN}`
-- `telegram.allowed_user_ids` — whitelist (обязательно для безопасности)
-- `cursor.workspace` — каталог на Linux, где агент работает
-- `cursor.mode` — `agent` (действия) или `plan` (только план)
-- `bot.system_prefix` — системная инструкция для каждого сообщения
-
-## Команды бота
-
-| Команда | Описание |
-|---------|----------|
-| `/start` | Приветствие |
-| `/new` | Новая сессия Cursor (сброс контекста) |
-| `/mode agent\|plan` | Режим агента |
-| `/status` | workspace, model, mode |
-| Любой текст | Отправляется в Cursor Agent |
-
-## Безопасность
-
-- Агент может **выполнять shell-команды** и менять файлы в `workspace`.
-- Ограничьте `allowed_user_ids`.
-- Запускайте от отдельного пользователя Linux с минимальными правами.
-- Рассмотрите `cursor.mode: plan` для read-only планирования.
-
-## Альтернатива: только Cursor CLI
-
-Если не нужен SDK, на Linux можно вызывать:
-
-```bash
-agent -p "ваш промпт" --output-format text
-```
-
-Но для Telegram-диалога всё равно нужен тонкий процесс (этот проект ~200 строк). SDK даёт resume-сессии и стриминг.
-
-## Альтернатива: Cursor Automation + webhook
-
-1. В Cursor создайте Automation с триггером **Webhook**.
-2. Напишите минимальный HTTP-сервис: Telegram → POST на URL automation.
-3. Минус: нет нативного двустороннего чата, сложнее стримить ответ в Telegram.
-
-Для управления Linux из Telegram рекомендуется этот SDK-мост.
-
-## MCP и правила проекта
-
-Чтобы агент видел `.cursor/rules`, MCP и skills на сервере:
-
-```yaml
-cursor:
-  setting_sources:
-    - project
-    - user
-```
-
-Файлы должны лежать в `cursor.workspace`.
-
-## Troubleshooting
-
-| Проблема | Решение |
-|----------|---------|
-| `Cursor не запустился` | `agent login` или `CURSOR_API_KEY` |
-| `workspace does not exist` | создайте каталог, укажите абсолютный путь |
-| Бот не отвечает | проверьте `allowed_user_ids` |
-| Долгие задачи | один запрос на чат; дождитесь ответа или `/new` |
+MIT. Используйте на свой риск: агент имеет доступ к выполнению команд на сервере.
