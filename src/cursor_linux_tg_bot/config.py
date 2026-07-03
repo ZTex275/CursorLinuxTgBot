@@ -50,6 +50,7 @@ class BotConfig:
     system_prefix: str
     max_reply_length: int = 4000
     stream_edit_interval_sec: float = 2.0
+    max_queue_size: int = 100
 
 
 @dataclass
@@ -124,6 +125,7 @@ def load_config(path: str | Path) -> AppConfig:
             ),
             max_reply_length=int(bot.get("max_reply_length", 4000)),
             stream_edit_interval_sec=float(bot.get("stream_edit_interval_sec", 2.0)),
+            max_queue_size=int(bot.get("max_queue_size", 100)),
         ),
         git=GitConfig(
             enabled=bool(git.get("enabled", True)),

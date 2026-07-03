@@ -14,6 +14,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from .config import AppConfig, load_config
 from .cursor_runner import CursorSessionManager, RunUpdate
 from .git_manager import GitManager
+from .message_queue import MessageQueue
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ class TelegramCursorBot:
             config.cursor.workspace,
             enabled=config.git.enabled,
         )
+        self._queue = MessageQueue(max_size=config.bot.max_queue_size)
+        self._queue.set_handler(self._process_user_message)
 
     async def _authorized(self, update: Update) -> bool:
         user = update.effective_user
@@ -103,6 +106,20 @@ class TelegramCursorBot:
         ).strip()
         await update.message.reply_text(text)
 
+    async def cmd_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message:
+            return
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        pending = self._queue.size(chat_id)
+        if pending == 0:
+            await update.message.reply_text("Очередь пуста.")
+        else:
+            word = "сообщение" if pending == 1 else "сообщения" if 2 <= pending <= 4 else "сообщений"
+            await update.message.reply_text(f"В очереди: {pending} {word}.")
+
     async def cmd_commit(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
             await self._deny(update)
@@ -159,7 +176,7 @@ class TelegramCursorBot:
 
         lock = self._sessions.lock_for(chat_id)
         if lock.locked():
-            await update.message.reply_text("Подождите — предыдущий запрос ещё выполняется.")
+            await update.message.reply_text("Подождите — сейчас выполняется задача из очереди.")
             return
 
         async with lock:
@@ -235,22 +252,14 @@ class TelegramCursorBot:
         logger.warning("auto-commit failed: %s", result.message)
         return None
 
-    async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not await self._authorized(update):
-            await self._deny(update)
-            return
-        if not update.message or not update.message.text:
+    async def _process_user_message(self, update: Update, user_text: str) -> None:
+        if not update.message:
             return
 
         chat_id = update.effective_chat.id if update.effective_chat else 0
-        user_text = update.message.text.strip()
         prompt = f"{self._config.bot.system_prefix}\n\n{user_text}"
 
         lock = self._sessions.lock_for(chat_id)
-        if lock.locked():
-            await update.message.reply_text("Подождите — предыдущий запрос ещё выполняется.")
-            return
-
         async with lock:
             if self._config.git.enabled:
                 if not await self._git.is_repo():
@@ -272,14 +281,30 @@ class TelegramCursorBot:
 
             if final and not final.error and self._config.git.enabled:
                 commit_note = await self._maybe_auto_commit(chat_id, user_text)
-                if commit_note and update.message:
+                if commit_note:
                     await update.message.reply_text(f"📌 {commit_note}")
+
+    async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message or not update.message.text:
+            return
+
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        user_text = update.message.text.strip()
+        lock = self._sessions.lock_for(chat_id)
+
+        status = await self._queue.enqueue(chat_id, update, user_text, running=lock.locked())
+        if status:
+            await update.message.reply_text(status)
 
     async def post_init(self, application: Application) -> None:
         await self._sessions.start()
         logger.info("Cursor bridge started for workspace %s", self._config.cursor.workspace)
 
     async def post_shutdown(self, application: Application) -> None:
+        await self._queue.shutdown()
         await self._sessions.stop()
         logger.info("Cursor bridge stopped")
 
@@ -297,6 +322,7 @@ class TelegramCursorBot:
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("commit", self.cmd_commit))
         app.add_handler(CommandHandler("undo", self.cmd_undo))
+        app.add_handler(CommandHandler("queue", self.cmd_queue))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_message))
         return app
 
