@@ -53,10 +53,19 @@ class BotConfig:
 
 
 @dataclass
+class GitConfig:
+    enabled: bool = True
+    auto_commit: bool = True
+    commit_prefix: str = "tg: "
+    max_commit_message_length: int = 120
+
+
+@dataclass
 class AppConfig:
     telegram: TelegramConfig
     cursor: CursorConfig
     bot: BotConfig
+    git: GitConfig
     sessions_dir: Path
 
 
@@ -68,6 +77,7 @@ def load_config(path: str | Path) -> AppConfig:
     telegram = data.get("telegram", {})
     cursor = data.get("cursor", {})
     bot = data.get("bot", {})
+    git = data.get("git", {})
 
     token = telegram.get("token", "").strip()
     api_key = cursor.get("api_key", "").strip()
@@ -114,6 +124,12 @@ def load_config(path: str | Path) -> AppConfig:
             ),
             max_reply_length=int(bot.get("max_reply_length", 4000)),
             stream_edit_interval_sec=float(bot.get("stream_edit_interval_sec", 2.0)),
+        ),
+        git=GitConfig(
+            enabled=bool(git.get("enabled", True)),
+            auto_commit=bool(git.get("auto_commit", True)),
+            commit_prefix=str(git.get("commit_prefix", "tg: ")),
+            max_commit_message_length=int(git.get("max_commit_message_length", 120)),
         ),
         sessions_dir=sessions_dir,
     )

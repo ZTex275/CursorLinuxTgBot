@@ -22,11 +22,19 @@ bot:
     Привет! Я прокси к локальному Cursor Agent на этом сервере.
     Просто напишите задачу — агент выполнит её на Linux.
     /new — новая сессия, /mode agent|plan, /status — настройки.
+    /commit — зафиксировать изменения в git, /undo — откатить последнее сообщение.
   system_prefix: |
     Пользователь управляет этим Linux-сервером через Telegram.
     Выполняй запросы на этой машине. Кратко отвечай по-русски.
   max_reply_length: 4000
   stream_edit_interval_sec: 2.0
+
+git:
+  enabled: true
+  # После каждого успешного ответа агента — git commit с текстом сообщения
+  auto_commit: true
+  commit_prefix: "tg: "
+  max_commit_message_length: 120
 
 # Для systemd после install.sh: /var/lib/cursor-linux-tg-bot/sessions
 sessions_dir: /var/lib/cursor-linux-tg-bot/sessions

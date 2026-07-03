@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +9,8 @@ from typing import AsyncIterator
 from cursor_sdk import AgentOptions, AsyncClient, CursorAgentError, LocalAgentOptions, SendOptions
 
 from .config import CursorConfig
+from .git_manager import GitCheckpoint
+from .session_store import ChatSession, SessionStore
 
 
 @dataclass
@@ -22,7 +23,7 @@ class RunUpdate:
 class CursorSessionManager:
     def __init__(self, cursor: CursorConfig, sessions_dir: Path) -> None:
         self._cursor = cursor
-        self._sessions_dir = sessions_dir
+        self._sessions = SessionStore(sessions_dir)
         self._client: AsyncClient | None = None
         self._agents: dict[int, object] = {}
         self._locks: dict[int, asyncio.Lock] = {}
@@ -55,32 +56,29 @@ class CursorSessionManager:
             self._locks[chat_id] = asyncio.Lock()
         return self._locks[chat_id]
 
-    def _session_file(self, chat_id: int) -> Path:
-        return self._sessions_dir / f"{chat_id}.json"
+    def load_session(self, chat_id: int) -> ChatSession:
+        return self._sessions.load(chat_id)
 
-    def _read_session(self, chat_id: int) -> str | None:
-        path = self._session_file(chat_id)
-        if not path.exists():
-            return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data.get("agent_id")
+    def save_session(self, chat_id: int, session: ChatSession) -> None:
+        self._sessions.save(chat_id, session)
 
-    def _write_session(self, chat_id: int, agent_id: str) -> None:
-        self._session_file(chat_id).write_text(
-            json.dumps({"agent_id": agent_id}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+    def set_git_checkpoint(self, chat_id: int, checkpoint: GitCheckpoint | None, user_message: str | None = None) -> None:
+        session = self._sessions.load(chat_id)
+        session.git_checkpoint = checkpoint
+        if user_message is not None:
+            session.last_user_message = user_message
+        self._sessions.save(chat_id, session)
 
-    def _clear_session(self, chat_id: int) -> None:
-        path = self._session_file(chat_id)
-        if path.exists():
-            path.unlink()
+    def clear_git_checkpoint(self, chat_id: int) -> None:
+        session = self._sessions.load(chat_id)
+        session.git_checkpoint = None
+        self._sessions.save(chat_id, session)
 
     async def reset_chat(self, chat_id: int) -> None:
         agent = self._agents.pop(chat_id, None)
         if agent is not None:
             await agent.close()
-        self._clear_session(chat_id)
+        self._sessions.clear(chat_id)
 
     async def _get_or_create_agent(self, chat_id: int):
         if chat_id in self._agents:
@@ -88,12 +86,12 @@ class CursorSessionManager:
 
         assert self._client is not None
         options = self._agent_options()
+        session = self._sessions.load(chat_id)
 
-        saved_id = self._read_session(chat_id)
         agent = None
-        if saved_id:
+        if session.agent_id:
             try:
-                agent = await self._client.agents.resume(saved_id, options)
+                agent = await self._client.agents.resume(session.agent_id, options)
             except CursorAgentError:
                 agent = None
 
@@ -104,7 +102,8 @@ class CursorSessionManager:
                 local=options.local,
                 mode=options.mode,
             )
-            self._write_session(chat_id, agent.agent_id)
+            session.agent_id = agent.agent_id
+            self._sessions.save(chat_id, session)
 
         self._agents[chat_id] = agent
         return agent
