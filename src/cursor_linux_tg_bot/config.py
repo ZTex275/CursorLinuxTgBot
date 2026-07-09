@@ -33,6 +33,28 @@ def _expand(value: Any) -> Any:
 class TelegramConfig:
     token: str
     allowed_user_ids: list[int] = field(default_factory=list)
+    force_ipv4: bool = True
+    proxy: str = ""
+    connect_timeout: float = 30.0
+    read_timeout: float = 30.0
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token)
+
+
+@dataclass
+class VkConfig:
+    token: str = ""
+    group_id: int = 0
+    allowed_user_ids: list[int] = field(default_factory=list)
+    connect_timeout: float = 30.0
+    read_timeout: float = 30.0
+    proxy: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token and self.group_id)
 
 
 @dataclass
@@ -64,6 +86,7 @@ class GitConfig:
 @dataclass
 class AppConfig:
     telegram: TelegramConfig
+    vk: VkConfig
     cursor: CursorConfig
     bot: BotConfig
     git: GitConfig
@@ -76,16 +99,22 @@ def load_config(path: str | Path) -> AppConfig:
     data = _expand(raw)
 
     telegram = data.get("telegram", {})
+    vk = data.get("vk", {}) or {}
     cursor = data.get("cursor", {})
     bot = data.get("bot", {})
     git = data.get("git", {})
 
     token = telegram.get("token", "").strip()
+    vk_token = str(vk.get("token", "") or "").strip()
+    vk_group_id = int(vk.get("group_id", 0) or 0)
     api_key = cursor.get("api_key", "").strip()
     workspace = cursor.get("workspace", "").strip()
 
-    if not token:
-        raise ValueError("telegram.token is required (use ${TELEGRAM_BOT_TOKEN} in config.yaml)")
+    if not token and not (vk_token and vk_group_id):
+        raise ValueError(
+            "Нужен хотя бы один мессенджер: telegram.token (${TELEGRAM_BOT_TOKEN}) "
+            "или vk.token + vk.group_id (${VK_BOT_TOKEN})"
+        )
     if not api_key:
         raise ValueError("cursor.api_key is required (use ${CURSOR_API_KEY} in config.yaml)")
     if not workspace:
@@ -106,6 +135,18 @@ def load_config(path: str | Path) -> AppConfig:
         telegram=TelegramConfig(
             token=token,
             allowed_user_ids=[int(uid) for uid in telegram.get("allowed_user_ids", [])],
+            force_ipv4=bool(telegram.get("force_ipv4", True)),
+            proxy=str(telegram.get("proxy", "")).strip(),
+            connect_timeout=float(telegram.get("connect_timeout", 30.0)),
+            read_timeout=float(telegram.get("read_timeout", 30.0)),
+        ),
+        vk=VkConfig(
+            token=vk_token,
+            group_id=vk_group_id,
+            allowed_user_ids=[int(uid) for uid in vk.get("allowed_user_ids", [])],
+            connect_timeout=float(vk.get("connect_timeout", 30.0)),
+            read_timeout=float(vk.get("read_timeout", 30.0)),
+            proxy=str(vk.get("proxy", "") or "").strip(),
         ),
         cursor=CursorConfig(
             api_key=api_key,

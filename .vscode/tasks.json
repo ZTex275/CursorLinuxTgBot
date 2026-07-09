@@ -1,0 +1,35 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "dev: prepare",
+      "type": "shell",
+      "command": "${workspaceFolder}/.vscode/prepare-dev.sh",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared",
+        "showReuseMessage": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "run bot",
+      "type": "shell",
+      "command": "${workspaceFolder}/.vscode/run-bot.sh",
+      "dependsOn": "dev: prepare",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

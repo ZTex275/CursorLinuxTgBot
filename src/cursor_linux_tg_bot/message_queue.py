@@ -4,42 +4,49 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-
-from telegram import Update
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-ProcessFn = Callable[[Update, str], Awaitable[None]]
+ChatKey = int | str
+ProcessFn = Callable[[Any, str], Awaitable[None]]
+NotifyErrorFn = Callable[[Any], Awaitable[None]]
 
 
 @dataclass
 class QueuedMessage:
-    update: Update
+    payload: Any
     user_text: str
 
 
 class MessageQueue:
-    """Per-chat FIFO queue: messages are processed one at a time."""
+    """Per-chat FIFO queue: messages are processed one at a time.
+
+    ``payload`` is opaque to the queue (telegram Update, VK peer id, ...)
+    and is passed to the handler as-is.
+    """
 
     def __init__(self, *, max_size: int = 100) -> None:
         self._max_size = max_size
-        self._queues: dict[int, asyncio.Queue[QueuedMessage]] = {}
-        self._workers: dict[int, asyncio.Task[None]] = {}
+        self._queues: dict[ChatKey, asyncio.Queue[QueuedMessage]] = {}
+        self._workers: dict[ChatKey, asyncio.Task[None]] = {}
         self._handler: ProcessFn | None = None
+        self._on_error: NotifyErrorFn | None = None
 
-    def set_handler(self, handler: ProcessFn) -> None:
+    def set_handler(self, handler: ProcessFn, *, on_error: NotifyErrorFn | None = None) -> None:
         self._handler = handler
+        self._on_error = on_error
 
-    def size(self, chat_id: int) -> int:
+    def size(self, chat_id: ChatKey) -> int:
         queue = self._queues.get(chat_id)
         return queue.qsize() if queue else 0
 
-    def _get_queue(self, chat_id: int) -> asyncio.Queue[QueuedMessage]:
+    def _get_queue(self, chat_id: ChatKey) -> asyncio.Queue[QueuedMessage]:
         if chat_id not in self._queues:
             self._queues[chat_id] = asyncio.Queue(maxsize=self._max_size)
         return self._queues[chat_id]
 
-    def _ensure_worker(self, chat_id: int) -> None:
+    def _ensure_worker(self, chat_id: ChatKey) -> None:
         worker = self._workers.get(chat_id)
         if worker is not None and not worker.done():
             return
@@ -47,8 +54,8 @@ class MessageQueue:
 
     async def enqueue(
         self,
-        chat_id: int,
-        update: Update,
+        chat_id: ChatKey,
+        payload: Any,
         user_text: str,
         *,
         running: bool = False,
@@ -58,7 +65,7 @@ class MessageQueue:
         if queue.full():
             return f"Очередь переполнена (макс. {self._max_size}). Дождитесь выполнения."
 
-        await queue.put(QueuedMessage(update=update, user_text=user_text))
+        await queue.put(QueuedMessage(payload=payload, user_text=user_text))
         self._ensure_worker(chat_id)
 
         ahead = queue.qsize() - 1 + (1 if running else 0)
@@ -73,19 +80,19 @@ class MessageQueue:
             word = "задач"
         return f"📋 В очереди: впереди {ahead} {word}"
 
-    async def _worker(self, chat_id: int) -> None:
+    async def _worker(self, chat_id: ChatKey) -> None:
         queue = self._queues[chat_id]
         assert self._handler is not None
 
         while True:
             item = await queue.get()
             try:
-                await self._handler(item.update, item.user_text)
+                await self._handler(item.payload, item.user_text)
             except Exception:
                 logger.exception("queued message failed chat_id=%s", chat_id)
-                if item.update.message:
+                if self._on_error is not None:
                     try:
-                        await item.update.message.reply_text("❌ Ошибка при обработке сообщения из очереди.")
+                        await self._on_error(item.payload)
                     except Exception:
                         logger.exception("failed to notify user about queue error")
             finally:

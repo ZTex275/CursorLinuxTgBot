@@ -27,8 +27,9 @@ else
   SERVICE_USER="$(logname 2>/dev/null || echo root)"
 fi
 
-if [[ "$SERVICE_USER" == "root" ]]; then
+if [[ "$SERVICE_USER" == "root" && "${ALLOW_ROOT_SERVICE:-}" != "1" ]]; then
   echo "Укажите пользователя: SERVICE_USER=myuser sudo ./install.sh" >&2
+  echo "Или для запуска от root: ALLOW_ROOT_SERVICE=1 SERVICE_USER=root sudo ./install.sh" >&2
   exit 1
 fi
 
@@ -40,10 +41,26 @@ echo "    Пользователь сервиса: ${SERVICE_USER}"
 echo "    Конфиг: ${CONFIG_DIR}"
 echo "    Данные: ${DATA_DIR}"
 
+# --- Python 3.11+ (cursor-sdk требует >=3.10, проект — >=3.11) ---
+PYTHON=""
+for candidate in python3.12 python3.11 /root/.local/bin/python3.11 python3; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      PYTHON="$candidate"
+      break
+    fi
+  fi
+done
+if [[ -z "$PYTHON" ]]; then
+  echo "Нужен Python 3.11+. Установите: curl -LsSf https://astral.sh/uv/install.sh | sh && uv python install 3.11" >&2
+  exit 1
+fi
+echo "==> Python: $($PYTHON --version)"
+
 # --- зависимости ---
 need_pkg=()
-command -v python3 >/dev/null || need_pkg+=(python3)
-python3 -c "import venv" 2>/dev/null || need_pkg+=(python3-venv)
+command -v "$PYTHON" >/dev/null || need_pkg+=(python3)
+"$PYTHON" -c "import venv" 2>/dev/null || need_pkg+=(python3-venv)
 if ((${#need_pkg[@]})); then
   if command -v apt-get >/dev/null; then
     apt-get update -qq
@@ -87,7 +104,7 @@ else
   rm -rf "${INSTALL_DIR}/.venv" "${INSTALL_DIR}/.git" "${INSTALL_DIR}/data"
 fi
 
-python3 -m venv "${INSTALL_DIR}/.venv"
+"$PYTHON" -m venv "${INSTALL_DIR}/.venv"
 "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip -q
 "${INSTALL_DIR}/.venv/bin/pip" install -e "${INSTALL_DIR}" -q
 
@@ -113,6 +130,8 @@ if [[ ! -f "${CONFIG_DIR}/env" ]]; then
   WORKSPACE="${WORKSPACE:-$DEFAULT_WORKSPACE}"
 
   umask 077
+  TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN//$'\r'/}"
+  CURSOR_API_KEY="${CURSOR_API_KEY//$'\r'/}"
   cat >"${CONFIG_DIR}/env" <<EOF
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 CURSOR_API_KEY=${CURSOR_API_KEY}

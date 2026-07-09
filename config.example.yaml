@@ -3,15 +3,28 @@
 
 telegram:
   token: ${TELEGRAM_BOT_TOKEN}
+  force_ipv4: true
+  connect_timeout: 30
+  read_timeout: 30
   # Ваш numeric user id из @userinfobot — только эти пользователи смогут писать боту
   allowed_user_ids:
     - 123456789
+
+# ВКонтакте (опционально, работает параллельно с Telegram).
+# Токен сообщества: Управление → Работа с API → Ключи доступа (права: сообщения).
+# В настройках Long Poll API включите событие "Входящее сообщение", версия 5.199.
+vk:
+  token: ${VK_BOT_TOKEN}
+  group_id: 0            # числовой id сообщества (без минуса)
+  allowed_user_ids: []   # numeric id пользователей VK; пусто = разрешить всем
+  connect_timeout: 30
+  read_timeout: 30
 
 cursor:
   api_key: ${CURSOR_API_KEY}
   model: composer-2.5
   # Рабочая директория на Linux-сервере, которой управляет агент
-  workspace: /root/cursor-linux-tg-bot
+  workspace: /home/YOUR_USER
   # agent — выполняет команды; plan — сначала план без изменений
   mode: agent
   # Пустой список = только inline-настройки SDK (без .cursor/rules из окружения)

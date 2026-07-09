@@ -12,6 +12,8 @@ from .config import CursorConfig
 from .git_manager import GitCheckpoint
 from .session_store import ChatSession, SessionStore
 
+ChatKey = int | str
+
 
 @dataclass
 class RunUpdate:
@@ -25,8 +27,8 @@ class CursorSessionManager:
         self._cursor = cursor
         self._sessions = SessionStore(sessions_dir)
         self._client: AsyncClient | None = None
-        self._agents: dict[int, object] = {}
-        self._locks: dict[int, asyncio.Lock] = {}
+        self._agents: dict[ChatKey, object] = {}
+        self._locks: dict[ChatKey, asyncio.Lock] = {}
 
     def _agent_options(self) -> AgentOptions:
         local = LocalAgentOptions(
@@ -41,7 +43,7 @@ class CursorSessionManager:
         )
 
     async def start(self) -> None:
-        self._client = await AsyncClient.launch_bridge(workspace=self._cursor.workspace).__aenter__()
+        self._client = await AsyncClient.launch_bridge(workspace=self._cursor.workspace)
 
     async def stop(self) -> None:
         for agent in list(self._agents.values()):
@@ -51,36 +53,36 @@ class CursorSessionManager:
             await self._client.aclose()
             self._client = None
 
-    def lock_for(self, chat_id: int) -> asyncio.Lock:
+    def lock_for(self, chat_id: ChatKey) -> asyncio.Lock:
         if chat_id not in self._locks:
             self._locks[chat_id] = asyncio.Lock()
         return self._locks[chat_id]
 
-    def load_session(self, chat_id: int) -> ChatSession:
+    def load_session(self, chat_id: ChatKey) -> ChatSession:
         return self._sessions.load(chat_id)
 
-    def save_session(self, chat_id: int, session: ChatSession) -> None:
+    def save_session(self, chat_id: ChatKey, session: ChatSession) -> None:
         self._sessions.save(chat_id, session)
 
-    def set_git_checkpoint(self, chat_id: int, checkpoint: GitCheckpoint | None, user_message: str | None = None) -> None:
+    def set_git_checkpoint(self, chat_id: ChatKey, checkpoint: GitCheckpoint | None, user_message: str | None = None) -> None:
         session = self._sessions.load(chat_id)
         session.git_checkpoint = checkpoint
         if user_message is not None:
             session.last_user_message = user_message
         self._sessions.save(chat_id, session)
 
-    def clear_git_checkpoint(self, chat_id: int) -> None:
+    def clear_git_checkpoint(self, chat_id: ChatKey) -> None:
         session = self._sessions.load(chat_id)
         session.git_checkpoint = None
         self._sessions.save(chat_id, session)
 
-    async def reset_chat(self, chat_id: int) -> None:
+    async def reset_chat(self, chat_id: ChatKey) -> None:
         agent = self._agents.pop(chat_id, None)
         if agent is not None:
             await agent.close()
         self._sessions.clear(chat_id)
 
-    async def _get_or_create_agent(self, chat_id: int):
+    async def _get_or_create_agent(self, chat_id: ChatKey):
         if chat_id in self._agents:
             return self._agents[chat_id]
 
@@ -110,7 +112,7 @@ class CursorSessionManager:
 
     async def run_prompt(
         self,
-        chat_id: int,
+        chat_id: ChatKey,
         prompt: str,
         *,
         mode: str | None = None,

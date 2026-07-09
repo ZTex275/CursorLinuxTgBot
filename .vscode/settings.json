@@ -1,0 +1,6 @@
+{
+  "python.defaultInterpreterPath": "/opt/cursor-linux-tg-bot/.venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+  "python.envFile": "${workspaceFolder}/.env",
+  "debug.allowBreakpointsEverywhere": true
+}

@@ -34,21 +34,24 @@ class ChatSession:
         )
 
 
+ChatKey = int | str
+
+
 class SessionStore:
     def __init__(self, sessions_dir: Path) -> None:
         self._dir = sessions_dir
         self._dir.mkdir(parents=True, exist_ok=True)
 
-    def _path(self, chat_id: int) -> Path:
+    def _path(self, chat_id: ChatKey) -> Path:
         return self._dir / f"{chat_id}.json"
 
-    def load(self, chat_id: int) -> ChatSession:
+    def load(self, chat_id: ChatKey) -> ChatSession:
         path = self._path(chat_id)
         if not path.exists():
             return ChatSession()
         return ChatSession.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
-    def save(self, chat_id: int, session: ChatSession) -> None:
+    def save(self, chat_id: ChatKey, session: ChatSession) -> None:
         data = session.to_dict()
         path = self._path(chat_id)
         if not data:
@@ -57,7 +60,7 @@ class SessionStore:
             return
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def clear(self, chat_id: int) -> None:
+    def clear(self, chat_id: ChatKey) -> None:
         path = self._path(chat_id)
         if path.exists():
             path.unlink()

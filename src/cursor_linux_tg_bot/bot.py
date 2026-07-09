@@ -10,41 +10,42 @@ from pathlib import Path
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.request import HTTPXRequest
 
 from .config import AppConfig, load_config
 from .cursor_runner import CursorSessionManager, RunUpdate
 from .git_manager import GitManager
 from .message_queue import MessageQueue
+from .network import enable_ipv4_only, telegram_transport
+from .textutil import split_message
+from .vk_bot import VkCursorBot
 
 logger = logging.getLogger(__name__)
 
 
-def _split_message(text: str, limit: int) -> list[str]:
-    if len(text) <= limit:
-        return [text]
-    chunks: list[str] = []
-    while text:
-        if len(text) <= limit:
-            chunks.append(text)
-            break
-        split_at = text.rfind("\n", 0, limit)
-        if split_at <= 0:
-            split_at = limit
-        chunks.append(text[:split_at])
-        text = text[split_at:].lstrip("\n")
-    return chunks
-
-
 class TelegramCursorBot:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        sessions: CursorSessionManager | None = None,
+        git: GitManager | None = None,
+        vk_bot: VkCursorBot | None = None,
+    ) -> None:
         self._config = config
-        self._sessions = CursorSessionManager(config.cursor, config.sessions_dir)
-        self._git = GitManager(
+        self._sessions = sessions or CursorSessionManager(config.cursor, config.sessions_dir)
+        self._git = git or GitManager(
             config.cursor.workspace,
             enabled=config.git.enabled,
         )
+        self._vk_bot = vk_bot
+        self._vk_task: asyncio.Task[None] | None = None
         self._queue = MessageQueue(max_size=config.bot.max_queue_size)
-        self._queue.set_handler(self._process_user_message)
+        self._queue.set_handler(self._process_user_message, on_error=self._notify_queue_error)
+
+    async def _notify_queue_error(self, update: Update) -> None:
+        if update.message:
+            await update.message.reply_text("❌ Ошибка при обработке сообщения из очереди.")
 
     async def _authorized(self, update: Update) -> bool:
         user = update.effective_user
@@ -194,7 +195,7 @@ class TelegramCursorBot:
         if not update.message:
             return
         limit = self._config.bot.max_reply_length
-        for chunk in _split_message(text, limit):
+        for chunk in split_message(text, limit):
             await update.message.reply_text(chunk)
 
     async def _stream_reply(self, update: Update, stream) -> RunUpdate | None:
@@ -302,16 +303,38 @@ class TelegramCursorBot:
     async def post_init(self, application: Application) -> None:
         await self._sessions.start()
         logger.info("Cursor bridge started for workspace %s", self._config.cursor.workspace)
+        if self._vk_bot is not None:
+            self._vk_task = asyncio.create_task(self._vk_bot.poll_loop())
 
     async def post_shutdown(self, application: Application) -> None:
+        if self._vk_task is not None:
+            self._vk_task.cancel()
+            self._vk_task = None
+        if self._vk_bot is not None:
+            await self._vk_bot.aclose()
         await self._queue.shutdown()
         await self._sessions.stop()
         logger.info("Cursor bridge stopped")
 
+    def _build_telegram_request(self) -> HTTPXRequest:
+        tg = self._config.telegram
+        transport = telegram_transport() if tg.force_ipv4 else None
+        return HTTPXRequest(
+            connect_timeout=tg.connect_timeout,
+            read_timeout=tg.read_timeout,
+            write_timeout=tg.read_timeout,
+            pool_timeout=tg.connect_timeout,
+            proxy=tg.proxy or None,
+            httpx_kwargs={"transport": transport} if transport else None,
+        )
+
     def build_application(self) -> Application:
+        request = self._build_telegram_request()
         app = (
             Application.builder()
             .token(self._config.telegram.token)
+            .request(request)
+            .get_updates_request(request)
             .post_init(self.post_init)
             .post_shutdown(self.post_shutdown)
             .build()
@@ -349,8 +372,20 @@ def main() -> None:
 
     config_path = Path(args.config).expanduser().resolve()
     config = load_config(config_path)
-    bot = TelegramCursorBot(config)
-    bot.build_application().run_polling(drop_pending_updates=True)
+    if config.telegram.force_ipv4:
+        enable_ipv4_only()
+        logger.info("IPv4-only mode enabled for Telegram API")
+
+    sessions = CursorSessionManager(config.cursor, config.sessions_dir)
+    git = GitManager(config.cursor.workspace, enabled=config.git.enabled)
+    vk_bot = VkCursorBot(config, sessions, git) if config.vk.enabled else None
+
+    if config.telegram.enabled:
+        bot = TelegramCursorBot(config, sessions=sessions, git=git, vk_bot=vk_bot)
+        bot.build_application().run_polling(drop_pending_updates=True, bootstrap_retries=-1)
+    elif vk_bot is not None:
+        logger.info("Telegram отключён — запускаю только VK-бота")
+        asyncio.run(vk_bot.run_standalone())
 
 
 if __name__ == "__main__":

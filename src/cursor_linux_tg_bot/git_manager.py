@@ -65,7 +65,7 @@ class GitManager:
             raise RuntimeError(stderr or "git rev-parse HEAD failed")
         return stdout
 
-    def _stash_label(self, chat_id: int) -> str:
+    def _stash_label(self, chat_id: int | str) -> str:
         return f"tg-checkpoint-chat{chat_id}"
 
     async def _find_stash_ref(self, label: str) -> str | None:
@@ -79,7 +79,7 @@ class GitManager:
                     return ref
         return None
 
-    async def create_checkpoint(self, chat_id: int) -> GitCheckpoint | None:
+    async def create_checkpoint(self, chat_id: int | str) -> GitCheckpoint | None:
         if not await self.is_repo():
             return None
 
