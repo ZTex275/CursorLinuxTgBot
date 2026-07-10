@@ -31,6 +31,16 @@ class VkApiError(RuntimeError):
         self.code = code
 
 
+_VK_SCOPE_HINT = """\
+VK: у токена нет прав для Long Poll (ошибка 15).
+Создайте НОВЫЙ ключ доступа сообщества:
+  Управление → Работа с API → Ключи доступа
+  Отметьте: «Сообщения сообщества» и «Управление сообществом»
+  НЕ используйте пользовательский OAuth-токен — только ключ сообщества.
+Затем: Работа с API → Long Poll API → Включить → событие «Входящее сообщение».
+И проверьте vk.group_id в config.yaml (числовой id без минуса)."""
+
+
 class VkCursorBot:
     def __init__(
         self,
@@ -372,7 +382,15 @@ class VkCursorBot:
 
             except asyncio.CancelledError:
                 raise
-            except (httpx.HTTPError, VkApiError, ValueError) as err:
+            except VkApiError as err:
+                if err.code in {5, 15, 27}:
+                    logger.error("%s", _VK_SCOPE_HINT)
+                    await asyncio.sleep(60)
+                else:
+                    logger.warning("VK long poll error: %s — retry in 10s", err)
+                    await asyncio.sleep(10)
+                server = None
+            except (httpx.HTTPError, ValueError) as err:
                 logger.warning("VK long poll error: %s — retry in 10s", err)
                 server = None
                 await asyncio.sleep(10)

@@ -28,6 +28,31 @@ if command -v systemctl >/dev/null 2>&1; then
   fi
 fi
 
+# Остановить другие экземпляры (nohup, старый F5, ручной запуск)
+stop_pids=()
+while IFS= read -r line; do
+  pid="${line%% *}"
+  cmd="${line#* }"
+  [[ "$pid" =~ ^[0-9]+$ ]] || continue
+  [[ "$pid" -eq $$ || "$pid" -eq "$PPID" ]] && continue
+  if [[ "$cmd" == */python\ run.py* ]] \
+    || [[ "$cmd" == *cursor-linux-tg-bot\ -c* ]] \
+    || [[ "$cmd" == *cursor_linux_tg_bot.bot* ]]; then
+    stop_pids+=("$pid")
+  fi
+done < <(pgrep -af 'run\.py|cursor-linux-tg-bot|cursor_linux_tg_bot\.bot' 2>/dev/null || true)
+
+if ((${#stop_pids[@]})); then
+  echo "==> Останавливаю другие экземпляры бота: ${stop_pids[*]}"
+  kill "${stop_pids[@]}" 2>/dev/null || true
+  sleep 1
+  for pid in "${stop_pids[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  done
+fi
+
 SITE_PACKAGES="$("$PYTHON" -c 'import site; print(site.getsitepackages()[0])')"
 
 if ! "$PYTHON" -c "import debugpy" 2>/dev/null; then

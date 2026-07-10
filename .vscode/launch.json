@@ -8,6 +8,7 @@
       "runtimeExecutable": "/bin/bash",
       "runtimeArgs": ["${workspaceFolder}/.vscode/run-bot.sh"],
       "cwd": "${workspaceFolder}",
+      "preLaunchTask": "dev: prepare",
       "console": "integratedTerminal"
     },
     {
@@ -23,6 +24,7 @@
         "PYTHONPATH": "${workspaceFolder}/src",
         "PATH": "${env:HOME}/.local/bin:${env:PATH}"
       },
+      "preLaunchTask": "dev: prepare",
       "console": "integratedTerminal",
       "justMyCode": true
     },
@@ -39,6 +41,7 @@
         "PYTHONPATH": "${workspaceFolder}/src",
         "PATH": "${env:HOME}/.local/bin:${env:PATH}"
       },
+      "preLaunchTask": "dev: prepare",
       "console": "integratedTerminal",
       "justMyCode": true
     }

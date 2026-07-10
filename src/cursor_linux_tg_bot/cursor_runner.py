@@ -98,12 +98,7 @@ class CursorSessionManager:
                 agent = None
 
         if agent is None:
-            agent = await self._client.agents.create(
-                model=options.model,
-                api_key=options.api_key,
-                local=options.local,
-                mode=options.mode,
-            )
+            agent = await self._client.agents.create(options)
             session.agent_id = agent.agent_id
             self._sessions.save(chat_id, session)
 
