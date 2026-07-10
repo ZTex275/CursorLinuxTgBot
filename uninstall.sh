@@ -12,28 +12,29 @@ if [[ "${EUID:-0}" -ne 0 ]]; then
 fi
 
 SERVICE_NAME="cursor-linux-tg-bot"
-INSTALL_DIR="${INSTALL_DIR:-/opt/cursor-linux-tg-bot}"
-CONFIG_DIR="${CONFIG_DIR:-/etc/cursor-linux-tg-bot}"
-DATA_DIR="${DATA_DIR:-/var/lib/cursor-linux-tg-bot}"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
 systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
 rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
 systemctl daemon-reload
 
-read -r -p "Удалить файлы приложения ${INSTALL_DIR}? [y/N] " ans
+echo "Сервис ${SERVICE_NAME} удалён."
+echo "Репозиторий ${REPO_DIR} не тронут (.env, config.yaml, data/ остаются)."
+
+read -r -p "Удалить старую установку /opt/cursor-linux-tg-bot? [y/N] " ans
 if [[ "${ans,,}" == "y" ]]; then
-  rm -rf "$INSTALL_DIR"
+  rm -rf /opt/cursor-linux-tg-bot
 fi
 
-read -r -p "Удалить конфиг ${CONFIG_DIR}? [y/N] " ans
+read -r -p "Удалить старый конфиг /etc/cursor-linux-tg-bot? [y/N] " ans
 if [[ "${ans,,}" == "y" ]]; then
-  rm -rf "$CONFIG_DIR"
+  rm -rf /etc/cursor-linux-tg-bot
 fi
 
-read -r -p "Удалить сессии ${DATA_DIR}? [y/N] " ans
+read -r -p "Удалить старые сессии /var/lib/cursor-linux-tg-bot? [y/N] " ans
 if [[ "${ans,,}" == "y" ]]; then
-  rm -rf "$DATA_DIR"
+  rm -rf /var/lib/cursor-linux-tg-bot
 fi
 
 echo "Удаление завершено."

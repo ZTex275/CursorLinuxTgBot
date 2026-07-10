@@ -2,9 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV="${ROOT}/.venv"
+PYTHON="${VENV}/bin/python"
 
 if [[ ! -f "${ROOT}/.env" ]]; then
-  echo "Создайте .env с TELEGRAM_BOT_TOKEN и CURSOR_API_KEY (см. README.md)" >&2
+  echo "Создайте .env (см. .env.example)" >&2
   exit 1
 fi
 
@@ -13,10 +15,25 @@ if [[ ! -f "${ROOT}/config.yaml" ]]; then
   echo "==> Создан config.yaml из config.example.yaml — заполните allowed_user_ids"
 fi
 
-PYTHON="/opt/cursor-linux-tg-bot/.venv/bin/python"
+mkdir -p "${ROOT}/data/sessions"
+
 if [[ ! -x "$PYTHON" ]]; then
-  echo "Сначала установите проект: sudo ./install.sh" >&2
-  exit 1
+  echo "==> Создаю .venv в репозитории (sudo ./install.sh для полной установки)"
+  PY=""
+  for candidate in python3.12 python3.11 "${HOME}/.local/bin/python3.11" python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+        PY="$candidate"
+        break
+      fi
+    fi
+  done
+  if [[ -z "$PY" ]]; then
+    echo "Нужен Python 3.11+: sudo ./install.sh" >&2
+    exit 1
+  fi
+  "$PY" -m venv "$VENV"
+  "$PYTHON" -m pip install -q -e "${ROOT}"
 fi
 
 SERVICE_NAME="cursor-linux-tg-bot"
@@ -28,7 +45,6 @@ if command -v systemctl >/dev/null 2>&1; then
   fi
 fi
 
-# Остановить другие экземпляры (nohup, старый F5, ручной запуск)
 stop_pids=()
 while IFS= read -r line; do
   pid="${line%% *}"

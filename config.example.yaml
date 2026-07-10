@@ -53,5 +53,5 @@ git:
   commit_prefix: "tg: "
   max_commit_message_length: 120
 
-# Для systemd после install.sh: /var/lib/cursor-linux-tg-bot/sessions
-sessions_dir: /var/lib/cursor-linux-tg-bot/sessions
+# Сессии Cursor (локально в репозитории)
+sessions_dir: data/sessions

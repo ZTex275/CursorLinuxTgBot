@@ -1,29 +1,23 @@
-# Шаблон. Рабочий unit создаётся автоматически скриптом install.sh
-# в /etc/systemd/system/cursor-linux-tg-bot.service
-#
-# Ручная установка (если без install.sh):
-#   sudo cp deploy/cursor-linux-tg-bot.service /etc/systemd/system/
-#   sudo systemctl daemon-reload
-#   sudo systemctl enable --now cursor-linux-tg-bot
-
 [Unit]
-Description=Telegram bridge to Cursor local agent (Linux)
+Description=Telegram/VK bridge to Cursor local agent (Linux)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=YOUR_USER
-Group=YOUR_USER
-WorkingDirectory=/opt/cursor-linux-tg-bot
-EnvironmentFile=/etc/cursor-linux-tg-bot/env
-Environment=PATH=/home/YOUR_USER/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/opt/cursor-linux-tg-bot/.venv/bin/cursor-linux-tg-bot -c /etc/cursor-linux-tg-bot/config.yaml
+# install.sh подставит REPO_DIR, SERVICE_USER и пути
+WorkingDirectory=/root/CursorLinuxTgBot
+EnvironmentFile=/root/CursorLinuxTgBot/.env
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/root/CursorLinuxTgBot/.venv/bin/python /root/CursorLinuxTgBot/run.py -c /root/CursorLinuxTgBot/config.yaml
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=cursor-linux-tg-bot
+
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
