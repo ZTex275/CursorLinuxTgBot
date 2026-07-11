@@ -10,6 +10,7 @@ from .git_manager import GitCheckpoint
 @dataclass
 class ChatSession:
     agent_id: str | None = None
+    messages: list[dict] | None = None
     git_checkpoint: GitCheckpoint | None = None
     last_user_message: str | None = None
 
@@ -17,6 +18,8 @@ class ChatSession:
         data: dict = {}
         if self.agent_id:
             data["agent_id"] = self.agent_id
+        if self.messages:
+            data["messages"] = self.messages
         if self.git_checkpoint:
             data["git_checkpoint"] = asdict(self.git_checkpoint)
         if self.last_user_message:
@@ -27,8 +30,11 @@ class ChatSession:
     def from_dict(cls, data: dict) -> ChatSession:
         cp = data.get("git_checkpoint")
         checkpoint = GitCheckpoint(**cp) if cp else None
+        raw_messages = data.get("messages")
+        messages = list(raw_messages) if raw_messages else None
         return cls(
             agent_id=data.get("agent_id"),
+            messages=messages,
             git_checkpoint=checkpoint,
             last_user_message=data.get("last_user_message"),
         )

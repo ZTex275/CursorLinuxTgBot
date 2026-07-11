@@ -67,6 +67,17 @@ class CursorConfig:
 
 
 @dataclass
+class OpenRouterConfig:
+    api_key: str
+    model: str
+    mode: str = "agent"
+    base_url: str = "https://openrouter.ai/api/v1"
+    max_tool_rounds: int = 25
+    site_url: str = ""
+    app_name: str = "cursor-linux-tg-bot"
+
+
+@dataclass
 class BotConfig:
     welcome_message: str
     system_prefix: str
@@ -87,10 +98,26 @@ class GitConfig:
 class AppConfig:
     telegram: TelegramConfig
     vk: VkConfig
-    cursor: CursorConfig
+    provider: str
+    workspace: str
+    mode: str
+    cursor: CursorConfig | None
+    openrouter: OpenRouterConfig | None
     bot: BotConfig
     git: GitConfig
     sessions_dir: Path
+
+    @property
+    def model(self) -> str:
+        if self.provider == "openrouter":
+            assert self.openrouter is not None
+            return self.openrouter.model
+        assert self.cursor is not None
+        return self.cursor.model
+
+    @property
+    def provider_label(self) -> str:
+        return "OpenRouter" if self.provider == "openrouter" else "Cursor"
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -100,36 +127,77 @@ def load_config(path: str | Path) -> AppConfig:
 
     telegram = data.get("telegram", {})
     vk = data.get("vk", {}) or {}
-    cursor = data.get("cursor", {})
+    agent = data.get("agent", {}) or {}
+    cursor = data.get("cursor", {}) or {}
+    openrouter = data.get("openrouter", {}) or {}
     bot = data.get("bot", {})
     git = data.get("git", {})
 
     token = telegram.get("token", "").strip()
     vk_token = str(vk.get("token", "") or "").strip()
     vk_group_id = int(vk.get("group_id", 0) or 0)
-    api_key = cursor.get("api_key", "").strip()
-    workspace = cursor.get("workspace", "").strip()
 
     if not token and not (vk_token and vk_group_id):
         raise ValueError(
             "Нужен хотя бы один мессенджер: telegram.token (${TELEGRAM_BOT_TOKEN}) "
             "или vk.token + vk.group_id (${VK_BOT_TOKEN})"
         )
-    if not api_key:
-        raise ValueError("cursor.api_key is required (use ${CURSOR_API_KEY} in config.yaml)")
+
+    provider = str(agent.get("provider", "cursor")).strip().lower()
+    if provider not in {"cursor", "openrouter"}:
+        raise ValueError('agent.provider must be "cursor" or "openrouter"')
+
+    workspace = str(agent.get("workspace") or cursor.get("workspace", "")).strip()
     if not workspace:
-        raise ValueError("cursor.workspace is required — path to the Linux workspace the agent controls")
+        raise ValueError(
+            "workspace is required — задайте agent.workspace или cursor.workspace "
+            "(путь к Linux-директории, которой управляет агент)"
+        )
 
     workspace_path = Path(workspace).expanduser().resolve()
     if not workspace_path.is_dir():
-        raise ValueError(f"cursor.workspace does not exist: {workspace_path}")
+        raise ValueError(f"workspace does not exist: {workspace_path}")
+
+    mode = str(agent.get("mode") or cursor.get("mode") or openrouter.get("mode", "agent"))
+    if mode not in {"agent", "plan"}:
+        raise ValueError('mode must be "agent" or "plan"')
+
+    cursor_cfg: CursorConfig | None = None
+    openrouter_cfg: OpenRouterConfig | None = None
+
+    if provider == "cursor":
+        api_key = cursor.get("api_key", "").strip()
+        if not api_key:
+            raise ValueError("cursor.api_key is required (use ${CURSOR_API_KEY} in config.yaml)")
+        cursor_cfg = CursorConfig(
+            api_key=api_key,
+            model=cursor.get("model", "composer-2.5"),
+            workspace=str(workspace_path),
+            mode=mode,
+            setting_sources=list(cursor.get("setting_sources", [])),
+        )
+    else:
+        api_key = openrouter.get("api_key", "").strip()
+        if not api_key:
+            raise ValueError("openrouter.api_key is required (use ${OPENROUTER_API_KEY} in config.yaml)")
+        openrouter_cfg = OpenRouterConfig(
+            api_key=api_key,
+            model=openrouter.get("model", "anthropic/claude-sonnet-4"),
+            mode=mode,
+            base_url=str(openrouter.get("base_url", "https://openrouter.ai/api/v1")).strip(),
+            max_tool_rounds=int(openrouter.get("max_tool_rounds", 25)),
+            site_url=str(openrouter.get("site_url", "")).strip(),
+            app_name=str(openrouter.get("app_name", "cursor-linux-tg-bot")).strip(),
+        )
 
     sessions_dir = Path(data.get("sessions_dir", config_path.parent / "data" / "sessions")).expanduser()
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    mode = cursor.get("mode", "agent")
-    if mode not in {"agent", "plan"}:
-        raise ValueError('cursor.mode must be "agent" or "plan"')
+    default_welcome = (
+        "Отправьте сообщение — оно уйдёт в локальный OpenRouter-агент на этом сервере."
+        if provider == "openrouter"
+        else "Отправьте сообщение — оно уйдёт в локальный Cursor Agent на этом сервере."
+    )
 
     return AppConfig(
         telegram=TelegramConfig(
@@ -148,18 +216,13 @@ def load_config(path: str | Path) -> AppConfig:
             read_timeout=float(vk.get("read_timeout", 30.0)),
             proxy=str(vk.get("proxy", "") or "").strip(),
         ),
-        cursor=CursorConfig(
-            api_key=api_key,
-            model=cursor.get("model", "composer-2.5"),
-            workspace=str(workspace_path),
-            mode=mode,
-            setting_sources=list(cursor.get("setting_sources", [])),
-        ),
+        provider=provider,
+        workspace=str(workspace_path),
+        mode=mode,
+        cursor=cursor_cfg,
+        openrouter=openrouter_cfg,
         bot=BotConfig(
-            welcome_message=bot.get(
-                "welcome_message",
-                "Отправьте сообщение — оно уйдёт в локальный Cursor Agent на этом сервере.",
-            ),
+            welcome_message=bot.get("welcome_message", default_welcome),
             system_prefix=bot.get(
                 "system_prefix",
                 "Пользователь управляет Linux-сервером через Telegram. Выполняй запросы на этой машине.",

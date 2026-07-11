@@ -2,24 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator
 
 from cursor_sdk import AgentOptions, AsyncClient, CursorAgentError, LocalAgentOptions, SendOptions
 
+from .agent_base import RunUpdate
 from .config import CursorConfig
 from .git_manager import GitCheckpoint
-from .session_store import ChatSession, SessionStore
-
-ChatKey = int | str
-
-
-@dataclass
-class RunUpdate:
-    text: str
-    done: bool = False
-    error: str | None = None
+from .session_store import ChatKey, ChatSession, SessionStore
 
 
 class CursorSessionManager:

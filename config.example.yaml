@@ -22,6 +22,13 @@ vk:
   connect_timeout: 30
   read_timeout: 30
 
+agent:
+  # cursor — локальный Cursor Agent CLI; openrouter — модели через OpenRouter API
+  provider: cursor
+  # Общий workspace (если не задан — берётся из cursor.workspace)
+  # workspace: /home/YOUR_USER
+  mode: agent
+
 cursor:
   api_key: ${CURSOR_API_KEY}
   model: composer-2.5
@@ -31,6 +38,14 @@ cursor:
   mode: agent
   # Пустой список = только inline-настройки SDK (без .cursor/rules из окружения)
   setting_sources: []
+
+openrouter:
+  api_key: ${OPENROUTER_API_KEY}
+  model: anthropic/claude-sonnet-4
+  base_url: https://openrouter.ai/api/v1
+  max_tool_rounds: 25
+  # site_url: https://example.com
+  # app_name: cursor-linux-tg-bot
 
 bot:
   welcome_message: |
@@ -53,5 +68,5 @@ git:
   commit_prefix: "tg: "
   max_commit_message_length: 120
 
-# Сессии Cursor (локально в репозитории)
+# Сессии агента (локально в репозитории)
 sessions_dir: data/sessions

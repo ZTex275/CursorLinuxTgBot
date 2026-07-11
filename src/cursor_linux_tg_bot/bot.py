@@ -12,8 +12,9 @@ from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
+from .agent_base import RunUpdate
+from .agent_factory import create_session_manager
 from .config import AppConfig, load_config
-from .cursor_runner import CursorSessionManager, RunUpdate
 from .git_manager import GitManager
 from .message_queue import MessageQueue
 from .network import enable_ipv4_only, telegram_transport
@@ -28,14 +29,14 @@ class TelegramCursorBot:
         self,
         config: AppConfig,
         *,
-        sessions: CursorSessionManager | None = None,
+        sessions=None,
         git: GitManager | None = None,
         vk_bot: VkCursorBot | None = None,
     ) -> None:
         self._config = config
-        self._sessions = sessions or CursorSessionManager(config.cursor, config.sessions_dir)
+        self._sessions = sessions or create_session_manager(config)
         self._git = git or GitManager(
-            config.cursor.workspace,
+            config.workspace,
             enabled=config.git.enabled,
         )
         self._vk_bot = vk_bot
@@ -74,7 +75,7 @@ class TelegramCursorBot:
         chat_id = update.effective_chat.id if update.effective_chat else 0
         await self._sessions.reset_chat(chat_id)
         if update.message:
-            await update.message.reply_text("Новая сессия Cursor. История и git-чекпоинт сброшены.")
+            await update.message.reply_text(f"Новая сессия {self._config.provider_label}. История и git-чекпоинт сброшены.")
 
     async def cmd_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
@@ -85,7 +86,11 @@ class TelegramCursorBot:
         if not context.args or context.args[0] not in {"agent", "plan"}:
             await update.message.reply_text("Использование: /mode agent | plan")
             return
-        self._config.cursor.mode = context.args[0]
+        self._config.mode = context.args[0]
+        if self._config.cursor is not None:
+            self._config.cursor.mode = context.args[0]
+        if self._config.openrouter is not None:
+            self._config.openrouter.mode = context.args[0]
         await update.message.reply_text(f"Режим по умолчанию: {context.args[0]}")
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -94,13 +99,13 @@ class TelegramCursorBot:
             return
         if not update.message:
             return
-        cursor = self._config.cursor
         git_on = self._config.git.enabled and await self._git.is_repo()
         text = textwrap.dedent(
             f"""
-            workspace: {cursor.workspace}
-            model: {cursor.model}
-            mode: {cursor.mode}
+            provider: {self._config.provider}
+            workspace: {self._config.workspace}
+            model: {self._config.model}
+            mode: {self._config.mode}
             git: {"включён" if git_on else "выкл / не репозиторий"}
             auto_commit: {self._config.git.auto_commit}
             """
@@ -202,7 +207,7 @@ class TelegramCursorBot:
         if not update.message:
             return None
 
-        status = await update.message.reply_text("⏳ Cursor думает…")
+        status = await update.message.reply_text(f"⏳ {self._config.provider_label} думает…")
         last_edit = 0.0
         interval = self._config.bot.stream_edit_interval_sec
         limit = self._config.bot.max_reply_length
@@ -277,7 +282,7 @@ class TelegramCursorBot:
                         return
 
             await update.message.chat.send_action(ChatAction.TYPING)
-            stream = self._sessions.run_prompt(chat_id, prompt, mode=self._config.cursor.mode)
+            stream = self._sessions.run_prompt(chat_id, prompt, mode=self._config.mode)
             final = await self._stream_reply(update, stream)
 
             if final and not final.error and self._config.git.enabled:
@@ -302,7 +307,7 @@ class TelegramCursorBot:
 
     async def post_init(self, application: Application) -> None:
         await self._sessions.start()
-        logger.info("Cursor bridge started for workspace %s", self._config.cursor.workspace)
+        logger.info("%s started for workspace %s", self._config.provider_label, self._config.workspace)
         if self._vk_bot is not None:
             self._vk_task = asyncio.create_task(self._vk_bot.poll_loop())
 
@@ -314,7 +319,7 @@ class TelegramCursorBot:
             await self._vk_bot.aclose()
         await self._queue.shutdown()
         await self._sessions.stop()
-        logger.info("Cursor bridge stopped")
+        logger.info("%s stopped", self._config.provider_label)
 
     def _build_telegram_request(self) -> HTTPXRequest:
         tg = self._config.telegram
@@ -376,8 +381,8 @@ def main() -> None:
         enable_ipv4_only()
         logger.info("IPv4-only mode enabled for Telegram API")
 
-    sessions = CursorSessionManager(config.cursor, config.sessions_dir)
-    git = GitManager(config.cursor.workspace, enabled=config.git.enabled)
+    sessions = create_session_manager(config)
+    git = GitManager(config.workspace, enabled=config.git.enabled)
     vk_bot = VkCursorBot(config, sessions, git) if config.vk.enabled else None
 
     if config.telegram.enabled:

@@ -13,8 +13,9 @@ import textwrap
 
 import httpx
 
+from .agent_base import RunUpdate
+from .agent_factory import create_session_manager
 from .config import AppConfig
-from .cursor_runner import CursorSessionManager, RunUpdate
 from .git_manager import GitManager
 from .message_queue import MessageQueue
 from .textutil import split_message
@@ -45,7 +46,7 @@ class VkCursorBot:
     def __init__(
         self,
         config: AppConfig,
-        sessions: CursorSessionManager,
+        sessions,
         git: GitManager,
     ) -> None:
         self._config = config
@@ -139,23 +140,27 @@ class VkCursorBot:
             await self._send(peer_id, self._config.bot.welcome_message)
         elif command == "/new":
             await self._sessions.reset_chat(chat_key)
-            await self._send(peer_id, "Новая сессия Cursor. История и git-чекпоинт сброшены.")
+            await self._send(peer_id, f"Новая сессия {self._config.provider_label}. История и git-чекпоинт сброшены.")
         elif command == "/mode":
             if not args or args[0] not in {"agent", "plan"}:
                 await self._send(peer_id, "Использование: /mode agent | plan")
             else:
-                self._config.cursor.mode = args[0]
+                self._config.mode = args[0]
+                if self._config.cursor is not None:
+                    self._config.cursor.mode = args[0]
+                if self._config.openrouter is not None:
+                    self._config.openrouter.mode = args[0]
                 await self._send(peer_id, f"Режим по умолчанию: {args[0]}")
         elif command == "/status":
-            cursor = self._config.cursor
             git_on = self._config.git.enabled and await self._git.is_repo()
             await self._send(
                 peer_id,
                 textwrap.dedent(
                     f"""
-                    workspace: {cursor.workspace}
-                    model: {cursor.model}
-                    mode: {cursor.mode}
+                    provider: {self._config.provider}
+                    workspace: {self._config.workspace}
+                    model: {self._config.model}
+                    mode: {self._config.mode}
                     git: {"включён" if git_on else "выкл / не репозиторий"}
                     auto_commit: {self._config.git.auto_commit}
                     """
@@ -260,7 +265,7 @@ class VkCursorBot:
         return None
 
     async def _stream_reply(self, peer_id: int, stream) -> RunUpdate | None:
-        status_id = await self._send(peer_id, "⏳ Cursor думает…")
+        status_id = await self._send(peer_id, f"⏳ {self._config.provider_label} думает…")
         last_edit = 0.0
         interval = self._config.bot.stream_edit_interval_sec
         limit = self._config.bot.max_reply_length
@@ -311,7 +316,7 @@ class VkCursorBot:
                         await self._send(peer_id, f"❌ Git checkpoint: {err}")
                         return
 
-            stream = self._sessions.run_prompt(chat_key, prompt, mode=self._config.cursor.mode)
+            stream = self._sessions.run_prompt(chat_key, prompt, mode=self._config.mode)
             final = await self._stream_reply(peer_id, stream)
 
             if final and not final.error and self._config.git.enabled:
@@ -398,7 +403,7 @@ class VkCursorBot:
     async def run_standalone(self) -> None:
         """Запуск без Telegram: сам стартует и останавливает Cursor-мост."""
         await self._sessions.start()
-        logger.info("Cursor bridge started for workspace %s", self._config.cursor.workspace)
+        logger.info("%s started for workspace %s", self._config.provider_label, self._config.workspace)
         try:
             await self.poll_loop()
         finally:
