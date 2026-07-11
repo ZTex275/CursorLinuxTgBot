@@ -18,6 +18,7 @@ from .config import AppConfig, load_config
 from .git_manager import GitManager
 from .message_queue import MessageQueue
 from .network import enable_ipv4_only, telegram_transport
+from .stream_ui import deliver_streamed_reply
 from .textutil import split_message
 from .vk_bot import VkCursorBot
 
@@ -207,37 +208,29 @@ class TelegramCursorBot:
         if not update.message:
             return None
 
-        status = await update.message.reply_text(f"⏳ {self._config.provider_label} думает…")
-        last_edit = 0.0
-        interval = self._config.bot.stream_edit_interval_sec
-        limit = self._config.bot.max_reply_length
-        final_item: RunUpdate | None = None
+        status = await update.message.reply_text(
+            f"⏳ {self._config.provider_label} выполняет задачу…\nПожалуйста, подождите"
+        )
 
-        async for item in stream:
-            final_item = item
-            if item.error:
-                await status.edit_text(f"❌ {item.error}")
-                return final_item
+        async def send_text(text: str) -> None:
+            await self._send_chunks(update, text)
 
-            now = asyncio.get_event_loop().time()
-            if not item.done and now - last_edit < interval:
-                continue
-            last_edit = now
+        async def edit_status(_msg_id: str, text: str) -> None:
+            await status.edit_text(text)
 
-            preview = item.text.strip() or "…"
-            if len(preview) > limit:
-                preview = preview[: limit - 1] + "…"
-            try:
-                if item.done:
-                    await status.delete()
-                    await self._send_chunks(update, item.text or "Готово.")
-                else:
-                    await status.edit_text(preview)
-            except Exception:
-                if item.done:
-                    await self._send_chunks(update, item.text or "Готово.")
+        async def delete_status(_msg_id: str) -> None:
+            await status.delete()
 
-        return final_item
+        return await deliver_streamed_reply(
+            stream,
+            provider_label=self._config.provider_label,
+            max_reply_length=self._config.bot.max_reply_length,
+            stream_edit_interval_sec=self._config.bot.stream_edit_interval_sec,
+            send_text=send_text,
+            edit_status=edit_status,
+            delete_status=delete_status,
+            status_message_id=str(status.message_id),
+        )
 
     async def _maybe_auto_commit(self, chat_id: int, user_text: str) -> str | None:
         if not self._config.git.enabled or not self._config.git.auto_commit:

@@ -18,6 +18,7 @@ from .agent_factory import create_session_manager
 from .config import AppConfig
 from .git_manager import GitManager
 from .message_queue import MessageQueue
+from .stream_ui import deliver_streamed_reply
 from .textutil import split_message
 
 logger = logging.getLogger(__name__)
@@ -265,35 +266,34 @@ class VkCursorBot:
         return None
 
     async def _stream_reply(self, peer_id: int, stream) -> RunUpdate | None:
-        status_id = await self._send(peer_id, f"⏳ {self._config.provider_label} думает…")
-        last_edit = 0.0
-        interval = self._config.bot.stream_edit_interval_sec
-        limit = self._config.bot.max_reply_length
-        final_item: RunUpdate | None = None
+        status_id = await self._send(
+            peer_id,
+            f"⏳ {self._config.provider_label} выполняет задачу…\nПожалуйста, подождите",
+        )
+        if status_id is None:
+            status_id = 0
 
-        async for item in stream:
-            final_item = item
-            if item.error:
-                if status_id is None or not await self._edit(peer_id, status_id, f"❌ {item.error}"):
-                    await self._send(peer_id, f"❌ {item.error}")
-                return final_item
+        async def send_text(text: str) -> None:
+            await self._send(peer_id, text)
 
-            now = asyncio.get_event_loop().time()
-            if not item.done and now - last_edit < interval:
-                continue
-            last_edit = now
+        async def edit_status(_msg_id: str, text: str) -> None:
+            if status_id:
+                await self._edit(peer_id, status_id, text)
 
-            if item.done:
-                if status_id is not None:
-                    await self._delete(peer_id, status_id)
-                await self._send(peer_id, item.text or "Готово.")
-            elif status_id is not None:
-                preview = item.text.strip() or "…"
-                if len(preview) > limit:
-                    preview = preview[: limit - 1] + "…"
-                await self._edit(peer_id, status_id, preview)
+        async def delete_status(_msg_id: str) -> None:
+            if status_id:
+                await self._delete(peer_id, status_id)
 
-        return final_item
+        return await deliver_streamed_reply(
+            stream,
+            provider_label=self._config.provider_label,
+            max_reply_length=self._config.bot.max_reply_length,
+            stream_edit_interval_sec=self._config.bot.stream_edit_interval_sec,
+            send_text=send_text,
+            edit_status=edit_status,
+            delete_status=delete_status,
+            status_message_id=str(status_id),
+        )
 
     async def _process_user_message(self, peer_id: int, user_text: str) -> None:
         chat_key = self._chat_key(peer_id)
