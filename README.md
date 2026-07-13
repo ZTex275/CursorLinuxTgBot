@@ -1,51 +1,55 @@
 # Cursor Linux Telegram Bot
 
-Управляйте Linux-сервером из Telegram: сообщения уходят в локальный **Cursor Agent**, ответы возвращаются в чат.
+Управляйте Linux-сервером из **Telegram** или **ВКонтакте**: сообщения уходят в локального агента (**Cursor Agent CLI** или **OpenRouter**), ответы возвращаются в чат.
 
 Проект рассчитан **только на Linux**. Установка — один скрипт, автозапуск — через **systemd**.
 
 ```
-Telegram  →  cursor-linux-tg-bot  →  Cursor SDK  →  shell / файлы на сервере
+Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter  →  shell / файлы на сервере
 ```
 
 ## Возможности
 
-- Диалог с Cursor Agent с сохранением сессии между сообщениями
-- Потоковые ответы в Telegram (обновление статуса по ходу работы)
-- Whitelist пользователей Telegram
+- Диалог с агентом с сохранением сессии между сообщениями
+- Потоковые ответы (обновление статуса по ходу работы)
+- **Telegram** и **VK** — можно включить оба или один
+- Провайдер агента: **Cursor** (локальный CLI) или **OpenRouter** (модели через API)
+- Whitelist пользователей
 - Режимы `agent` (выполняет команды) и `plan` (только план)
-- **Git**: авто-коммит после ответа, `/commit`, `/undo` — откат последнего сообщения
-- **Очередь сообщений** — можно писать несколько команд подряд, выполняются по порядку
+- **Git**: авто-коммит после ответа, `/commit`, `/undo`, `/git`, `/push`, `/pull`
+- **Очередь сообщений** — можно писать несколько команд подряд
 - Автозапуск при загрузке системы
 
 ## Что понадобится
 
-| Компонент | Где взять |
-|-----------|-----------|
-| Linux с systemd | Ubuntu, Debian, Fedora и др. |
-| Python 3.11+ | Ставится скриптом `install.sh` |
-| [Cursor API key](https://cursor.com/dashboard/integrations) | `cursor_...` |
-| [Cursor Agent CLI](https://cursor.com/docs/cli/overview) | Ставится скриптом, если нет |
-| Telegram-бот | [@BotFather](https://t.me/BotFather) |
-| Ваш Telegram user id | [@userinfobot](https://t.me/userinfobot) |
+| Компонент | Где взять | Когда нужен |
+|-----------|-----------|-------------|
+| Linux с systemd | Ubuntu, Debian, Fedora и др. | всегда |
+| Python 3.11+ | Ставится скриптом `install.sh` | всегда |
+| [Cursor API key](https://cursor.com/dashboard/integrations) | `cursor_...` | `agent.provider: cursor` |
+| [Cursor Agent CLI](https://cursor.com/docs/cli/overview) | Ставится скриптом | `agent.provider: cursor` |
+| [OpenRouter API key](https://openrouter.ai/keys) | `sk-or-...` | `agent.provider: openrouter` |
+| Telegram-бот | [@BotFather](https://t.me/BotFather) | Telegram |
+| Ваш Telegram user id | [@userinfobot](https://t.me/userinfobot) | Telegram |
+| Токен сообщества VK | Управление → Работа с API | VK (опционально) |
+| GitHub PAT (`repo`) | GitHub → Settings → Tokens | `/push`, `/pull`, `auto_push` |
 
 ## Быстрая установка
 
 ```bash
 git clone https://github.com/ZTex275/CursorLinuxTgBot.git
 cd CursorLinuxTgBot
-chmod +x install.sh uninstall.sh
+chmod +x install.sh uninstall.sh update.sh
 sudo ./install.sh
 ```
 
 Скрипт:
 
 1. Проверит, что ОС — Linux
-2. Установит Python и зависимости
+2. Установит Python и зависимости в `.venv`
 3. При необходимости поставит Cursor CLI
-4. Развернёт приложение в `/opt/cursor-linux-tg-bot`
-5. Создаст конфиг и секреты в `/etc/cursor-linux-tg-bot/`
-6. Зарегистрирует systemd-сервис и **включит автозагрузку**
+4. Создаст `.env` и `config.yaml` **в репозитории**
+5. Зарегистрирует systemd-сервис и **включит автозагрузку**
 
 Во время установки нужно ввести токен бота, API key Cursor, свой Telegram id и рабочую директорию агента.
 
@@ -68,12 +72,12 @@ sudo SERVICE_USER=deploy ./install.sh
 ## Структура после установки
 
 ```
-/opt/cursor-linux-tg-bot/          # код и venv
-/etc/cursor-linux-tg-bot/
-  env                              # TELEGRAM_BOT_TOKEN, CURSOR_API_KEY
-  config.yaml                      # основные настройки
-/var/lib/cursor-linux-tg-bot/
-  sessions/                        # id сессий Cursor по чатам
+CursorLinuxTgBot/              # клон репозитория (отсюда работает сервис)
+  .venv/                       # Python-окружение
+  config.yaml                  # основные настройки
+  .env                         # секреты (токены, ключи)
+  data/sessions/               # id сессий агента по чатам
+  install.sh / update.sh / uninstall.sh
 ```
 
 ## Управление сервисом
@@ -83,6 +87,7 @@ sudo systemctl status cursor-linux-tg-bot    # статус
 sudo journalctl -u cursor-linux-tg-bot -f    # логи в реальном времени
 sudo systemctl restart cursor-linux-tg-bot   # перезапуск
 sudo systemctl stop cursor-linux-tg-bot      # остановка
+sudo ./update.sh                             # обновить зависимости и перезапустить
 ```
 
 Удаление:
@@ -91,62 +96,83 @@ sudo systemctl stop cursor-linux-tg-bot      # остановка
 sudo ./uninstall.sh
 ```
 
-## Команды в Telegram
+> Раньше установка шла в `/opt/cursor-linux-tg-bot` и `/etc/cursor-linux-tg-bot/`. `uninstall.sh` предложит удалить эти каталоги, если они остались.
+
+## Команды в чате
 
 | Команда | Действие |
 |---------|----------|
 | `/start` | Приветствие и краткая справка |
-| `/new` | Новая сессия Cursor (сброс контекста) |
+| `/new` | Новая сессия (сброс контекста и git-чекпоинта) |
 | `/mode agent` | Агент выполняет команды и меняет файлы |
 | `/mode plan` | Только планирование, без изменений |
-| `/status` | Текущие workspace, model и mode |
-| `/commit [текст]` | Закоммитить изменения (без текста — комментарий из последнего сообщения) |
-| `/undo` | Откатить изменения **последнего** сообщения (включая авто-коммит) |
+| `/status` | provider, workspace, model, mode, git |
+| `/git` | Статус репозитория |
+| `/commit [текст]` | Закоммитить изменения |
+| `/push` | Отправить коммиты на GitHub |
+| `/pull` | Получить изменения с GitHub |
+| `/undo` | Откатить изменения **последнего** сообщения |
 | `/queue` | Сколько сообщений ждёт в очереди |
-| Любой текст | Задача для Cursor Agent (ставится в очередь) |
+| Любой текст | Задача для агента (ставится в очередь) |
 
-> **Git обязателен** для `/undo` и авто-коммита: `cursor.workspace` должен быть git-репозиторием (`git init`).
+> **Git обязателен** для `/undo` и авто-коммита: `workspace` должен быть git-репозиторием (`git init`).
 
 ### Как работает git
 
 1. **Перед** каждым сообщением бот сохраняет чекпоинт (`HEAD` + `git stash`, если были незакоммиченные файлы).
-2. **После** успешного ответа агента — авто-коммит с комментарием `tg: <ваш текст>` (если `git.auto_commit: true`).
-3. **`/undo`** — `git reset --hard` к чекпоинту и восстановление stash; убирает и изменения агента, и авто-коммит.
-4. **`/commit`** — ручной коммит в любой момент.
+2. **После** успешного ответа — авто-коммит с комментарием `tg: <ваш текст>` (если `git.auto_commit: true`).
+3. При `git.auto_push: true` — автоматический `git push` (нужен `GITHUB_TOKEN`).
+4. **`/undo`** — `git reset --hard` к чекпоинту и восстановление stash.
+5. **`/push`** / **`/pull`** — ручная синхронизация с GitHub.
 
 ### Очередь сообщений
 
-Можно отправить несколько текстовых сообщений подряд — каждое встанет в очередь и выполнится **по порядку**. Если бот занят, придёт ответ `📋 В очереди: впереди N задач`. Лимит очереди — `bot.max_queue_size` (по умолчанию 100).
+Можно отправить несколько текстовых сообщений подряд — каждое встанет в очередь и выполнится **по порядку**. Лимит — `bot.max_queue_size` (по умолчанию 100).
 
 ## Конфигурация
 
-Основной файл: `/etc/cursor-linux-tg-bot/config.yaml`  
-Секреты: `/etc/cursor-linux-tg-bot/env`
+Основной файл: `config.yaml` в корне репозитория  
+Секреты: `.env`
 
-Пример — в репозитории: [`config.example.yaml`](config.example.yaml).
+Пример — [`config.example.yaml`](config.example.yaml).
 
 ```yaml
 telegram:
   token: ${TELEGRAM_BOT_TOKEN}
   allowed_user_ids:
-    - 123456789          # только эти пользователи
+    - 123456789
+
+# Опционально — работает параллельно с Telegram
+vk:
+  token: ${VK_BOT_TOKEN}
+  group_id: 123456789
+  allowed_user_ids: []   # пусто = разрешить всем
+
+agent:
+  provider: cursor       # cursor | openrouter
+  workspace: /home/myuser
+  mode: agent            # agent | plan
 
 cursor:
   api_key: ${CURSOR_API_KEY}
   model: composer-2.5
-  workspace: /home/myuser   # каталог, где агент работает
-  mode: agent               # agent | plan
-  setting_sources: []       # [] — без .cursor/rules; ["project"] — подхватить правила
+  setting_sources: []    # ["project"] — подхватить .cursor/rules
+
+openrouter:
+  api_key: ${OPENROUTER_API_KEY}
+  model: openrouter/free
 
 bot:
-  system_prefix: |          # добавляется к каждому сообщению
-    Пользователь управляет Linux-сервером через Telegram.
+  system_prefix: |
+    Пользователь управляет этим Linux-сервером через Telegram.
+    Выполняй запросы на этой машине. Кратко отвечай по-русски.
 
 git:
   enabled: true
-  auto_commit: true           # коммит после каждого успешного ответа
+  auto_commit: true
+  auto_push: true
+  github_token: ${GITHUB_TOKEN}
   commit_prefix: "tg: "
-  max_commit_message_length: 120
 ```
 
 После правки конфига:
@@ -155,9 +181,39 @@ git:
 sudo systemctl restart cursor-linux-tg-bot
 ```
 
-### Подключить `.cursor/rules` и MCP
+### OpenRouter вместо Cursor
 
-Если в `workspace` лежат правила и MCP-конфиги Cursor:
+```yaml
+agent:
+  provider: openrouter
+  workspace: /home/myuser
+
+openrouter:
+  api_key: ${OPENROUTER_API_KEY}
+  model: anthropic/claude-sonnet-4
+```
+
+Cursor CLI и `CURSOR_API_KEY` не нужны. Агент выполняет shell-команды через OpenRouter API.
+
+### Подключить VK
+
+1. Создайте сообщество → Управление → Работа с API → Ключи доступа  
+   Права: «Сообщения сообщества» + «Управление сообществом»
+2. Long Poll API → Включить → «Входящее сообщение», v5.199
+3. В настройках сообщества включите «Сообщения сообщества»
+4. В `config.yaml`:
+
+```yaml
+vk:
+  token: ${VK_BOT_TOKEN}
+  group_id: 123456789        # числовой id без минуса
+  allowed_user_ids:
+    - 987654321
+```
+
+Telegram можно оставить или убрать (оставьте пустой `telegram.token`, если нужен только VK).
+
+### Подключить `.cursor/rules` и MCP
 
 ```yaml
 cursor:
@@ -169,7 +225,7 @@ cursor:
 
 ## Безопасность
 
-Cursor Agent может **запускать shell-команды** и **изменять файлы** в `workspace`. Это полноценный доступ к серверу в рамках выбранной директории.
+Агент может **запускать shell-команды** и **изменять файлы** в `workspace`. Это полноценный доступ к серверу в рамках выбранной директории.
 
 Рекомендации:
 
@@ -177,10 +233,9 @@ Cursor Agent может **запускать shell-команды** и **изм�
 - Сервис работает от обычного пользователя Linux, не от root
 - Для разведки без изменений используйте `mode: plan`
 - Ограничьте права пользователя сервиса по минимуму
+- `GITHUB_TOKEN` храните только в `.env` (права `600`)
 
 ## Локальный запуск (без systemd)
-
-Для отладки на Linux-машине:
 
 ```bash
 python3 -m venv .venv
@@ -193,6 +248,7 @@ cp .env.example .env
 
 set -a && source .env && set +a
 cursor-linux-tg-bot -c config.yaml
+# или: python run.py -c config.yaml
 ```
 
 На Windows бот **не запускается** — при старте проверяется `sys.platform == "linux"`.
@@ -202,17 +258,19 @@ cursor-linux-tg-bot -c config.yaml
 | Симптом | Что проверить |
 |---------|---------------|
 | Сервис не стартует | `sudo journalctl -u cursor-linux-tg-bot -n 50 --no-pager` |
-| «Cursor не запустился» | `CURSOR_API_KEY` в `/etc/cursor-linux-tg-bot/env` |
+| «Cursor не запустился» | `CURSOR_API_KEY` в `.env` |
 | | `sudo -u USER agent login` или `agent --version` |
 | Бот не отвечает | Ваш id в `allowed_user_ids` |
-| | Токен бота в `env` |
+| | Токен бота в `.env` |
+| `/push` не работает | `GITHUB_TOKEN` в `.env`, remote на GitHub |
+| VK молчит | Long Poll включён, сообщения сообщества включены |
 | `agent: command not found` | `sudo -u USER bash -c 'curl -fsSL https://cursor.com/install \| bash'` |
 | Долгий ответ | Один запрос на чат; дождитесь или `/new` |
 
 Проверка от имени пользователя сервиса:
 
 ```bash
-sudo -u myuser bash -lc 'source /etc/cursor-linux-tg-bot/env && /opt/cursor-linux-tg-bot/.venv/bin/cursor-linux-tg-bot -c /etc/cursor-linux-tg-bot/config.yaml'
+sudo -u myuser bash -lc 'set -a && source /path/to/CursorLinuxTgBot/.env && set +a && /path/to/CursorLinuxTgBot/.venv/bin/cursor-linux-tg-bot -c /path/to/CursorLinuxTgBot/config.yaml'
 ```
 
 ## Лицензия
