@@ -1,16 +1,34 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from typing import AsyncIterator
 
 from cursor_sdk import AgentOptions, AsyncClient, CursorAgentError, LocalAgentOptions, SendOptions
+from cursor_sdk.errors import AgentNotFoundError, InternalServerError, NetworkError
 
 from .agent_base import RunUpdate
 from .config import CursorConfig
 from .git_manager import GitCheckpoint
 from .session_store import ChatKey, ChatSession, SessionStore
+
+logger = logging.getLogger(__name__)
+
+
+def _is_recoverable_agent_error(err: CursorAgentError) -> bool:
+    if isinstance(err, (AgentNotFoundError, InternalServerError, NetworkError)):
+        return True
+    code = (err.code or err.proto_error_code or "").lower()
+    return code in {
+        "agent_not_found",
+        "internal",
+        "internal_error",
+        "internal_server_error",
+        "unavailable",
+        "upstream_error",
+    }
 
 
 class CursorSessionManager:
@@ -68,10 +86,31 @@ class CursorSessionManager:
         self._sessions.save(chat_id, session)
 
     async def reset_chat(self, chat_id: ChatKey) -> None:
+        await self._discard_agent(chat_id)
+        self._sessions.clear(chat_id)
+
+    async def _discard_agent(self, chat_id: ChatKey) -> None:
         agent = self._agents.pop(chat_id, None)
         if agent is not None:
-            await agent.close()
-        self._sessions.clear(chat_id)
+            try:
+                await agent.close()
+            except Exception:
+                pass
+        session = self._sessions.load(chat_id)
+        if session.agent_id:
+            session.agent_id = None
+            self._sessions.save(chat_id, session)
+
+    async def _restart_bridge(self) -> None:
+        logger.warning("Перезапуск Cursor bridge")
+        self._agents.clear()
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
+            self._client = None
+        self._client = await AsyncClient.launch_bridge(workspace=self._cursor.workspace)
 
     async def _get_or_create_agent(self, chat_id: ChatKey):
         if chat_id in self._agents:
@@ -103,13 +142,30 @@ class CursorSessionManager:
         *,
         mode: str | None = None,
     ) -> AsyncIterator[RunUpdate]:
-        agent = await self._get_or_create_agent(chat_id)
         send_options = SendOptions(mode=mode) if mode else None
+        run = None
 
-        try:
-            run = await agent.send(prompt, send_options)
-        except CursorAgentError as err:
-            yield RunUpdate(text="", done=True, error=f"Cursor не запустился: {err.message}")
+        for attempt in range(2):
+            try:
+                agent = await self._get_or_create_agent(chat_id)
+                run = await agent.send(prompt, send_options)
+                break
+            except CursorAgentError as err:
+                if attempt == 0 and _is_recoverable_agent_error(err):
+                    logger.warning(
+                        "Сбой агента (%s), пересоздаю сессию для %s",
+                        err.message,
+                        chat_id,
+                    )
+                    if isinstance(err, NetworkError):
+                        await self._restart_bridge()
+                    await self._discard_agent(chat_id)
+                    continue
+                yield RunUpdate(text="", done=True, error=f"Cursor не запустился: {err.message}")
+                return
+
+        if run is None:
+            yield RunUpdate(text="", done=True, error="Cursor не запустился: internal error")
             return
 
         buffer = ""
