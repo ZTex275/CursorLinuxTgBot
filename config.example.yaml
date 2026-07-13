@@ -53,6 +53,7 @@ bot:
     Просто напишите задачу — агент выполнит её на Linux.
     /new — новая сессия, /mode agent|plan, /status — настройки.
     /commit — зафиксировать изменения в git, /undo — откатить последнее сообщение.
+    /git — статус репозитория, /push и /pull — синхронизация с GitHub.
     Можно писать несколько сообщений подряд — они выполнятся по очереди. /queue — размер очереди.
   system_prefix: |
     Пользователь управляет этим Linux-сервером через Telegram.
@@ -65,6 +66,11 @@ git:
   enabled: true
   # После каждого успешного ответа агента — git commit с текстом сообщения
   auto_commit: true
+  # После коммита — git push (нужен GITHUB_TOKEN в .env)
+  auto_push: true
+  remote: origin
+  branch: ""
+  github_token: ${GITHUB_TOKEN}
   commit_prefix: "tg: "
   max_commit_message_length: 120
 

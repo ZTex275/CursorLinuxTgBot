@@ -15,6 +15,7 @@ from telegram.request import HTTPXRequest
 from .agent_base import RunUpdate
 from .agent_factory import create_session_manager
 from .config import AppConfig, load_config
+from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import MessageQueue
 from .network import enable_ipv4_only, telegram_transport
@@ -36,10 +37,7 @@ class TelegramCursorBot:
     ) -> None:
         self._config = config
         self._sessions = sessions or create_session_manager(config)
-        self._git = git or GitManager(
-            config.workspace,
-            enabled=config.git.enabled,
-        )
+        self._git = git or GitManager.from_config(config.workspace, config.git)
         self._vk_bot = vk_bot
         self._vk_task: asyncio.Task[None] | None = None
         self._queue = MessageQueue(max_size=config.bot.max_queue_size)
@@ -101,6 +99,7 @@ class TelegramCursorBot:
         if not update.message:
             return
         git_on = self._config.git.enabled and await self._git.is_repo()
+        gh = "токен задан" if self._config.git.github_token else "токен не задан"
         text = textwrap.dedent(
             f"""
             provider: {self._config.provider}
@@ -109,9 +108,54 @@ class TelegramCursorBot:
             mode: {self._config.mode}
             git: {"включён" if git_on else "выкл / не репозиторий"}
             auto_commit: {self._config.git.auto_commit}
+            auto_push: {self._config.git.auto_push}
+            github: {gh}
             """
         ).strip()
         await update.message.reply_text(text)
+
+    async def cmd_git(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message:
+            return
+        if not self._config.git.enabled:
+            await update.message.reply_text("Git отключён в config.yaml")
+            return
+        await update.message.reply_text(await self._git.status_summary())
+
+    async def cmd_push(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message:
+            return
+        if not self._config.git.enabled:
+            await update.message.reply_text("Git отключён в config.yaml")
+            return
+        if not self._config.git.github_token:
+            await update.message.reply_text("Задайте git.github_token: ${GITHUB_TOKEN} в config.yaml и .env")
+            return
+        result = await self._git.push()
+        prefix = "✅" if result.ok else "❌"
+        await update.message.reply_text(f"{prefix} {result.message}")
+
+    async def cmd_pull(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message:
+            return
+        if not self._config.git.enabled:
+            await update.message.reply_text("Git отключён в config.yaml")
+            return
+        if not self._config.git.github_token:
+            await update.message.reply_text("Задайте git.github_token: ${GITHUB_TOKEN} в config.yaml и .env")
+            return
+        result = await self._git.pull()
+        prefix = "✅" if result.ok else "❌"
+        await update.message.reply_text(f"{prefix} {result.message}")
 
     async def cmd_queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
@@ -158,9 +202,9 @@ class TelegramCursorBot:
         result = await self._git.commit(message)
         if result.ok:
             self._sessions.clear_git_checkpoint(chat_id)
-            await update.message.reply_text(f"✅ {result.message}")
-        else:
-            await update.message.reply_text(f"ℹ️ {result.message}")
+        await update.message.reply_text(
+            await format_commit_reply(self._git, result, self._config.git)
+        )
 
     async def cmd_undo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
@@ -247,7 +291,7 @@ class TelegramCursorBot:
         )
         result = await self._git.commit(message)
         if result.ok:
-            return result.message
+            return await append_push_note(self._git, result.message, self._config.git)
         logger.warning("auto-commit failed: %s", result.message)
         return None
 
@@ -343,6 +387,9 @@ class TelegramCursorBot:
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("commit", self.cmd_commit))
         app.add_handler(CommandHandler("undo", self.cmd_undo))
+        app.add_handler(CommandHandler("git", self.cmd_git))
+        app.add_handler(CommandHandler("push", self.cmd_push))
+        app.add_handler(CommandHandler("pull", self.cmd_pull))
         app.add_handler(CommandHandler("queue", self.cmd_queue))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_message))
         return app
@@ -375,7 +422,7 @@ def main() -> None:
         logger.info("IPv4-only mode enabled for Telegram API")
 
     sessions = create_session_manager(config)
-    git = GitManager(config.workspace, enabled=config.git.enabled)
+    git = GitManager.from_config(config.workspace, config.git)
     vk_bot = VkCursorBot(config, sessions, git) if config.vk.enabled else None
 
     if config.telegram.enabled:

@@ -90,6 +90,10 @@ class BotConfig:
 class GitConfig:
     enabled: bool = True
     auto_commit: bool = True
+    auto_push: bool = False
+    remote: str = "origin"
+    branch: str = ""
+    github_token: str = ""
     commit_prefix: str = "tg: "
     max_commit_message_length: int = 120
 
@@ -234,6 +238,10 @@ def load_config(path: str | Path) -> AppConfig:
         git=GitConfig(
             enabled=bool(git.get("enabled", True)),
             auto_commit=bool(git.get("auto_commit", True)),
+            auto_push=bool(git.get("auto_push", False)),
+            remote=str(git.get("remote", "origin")).strip() or "origin",
+            branch=str(git.get("branch", "")).strip(),
+            github_token=str(git.get("github_token", "")).strip(),
             commit_prefix=str(git.get("commit_prefix", "tg: ")),
             max_commit_message_length=int(git.get("max_commit_message_length", 120)),
         ),

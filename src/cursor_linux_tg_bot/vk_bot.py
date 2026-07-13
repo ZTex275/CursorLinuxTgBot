@@ -16,6 +16,7 @@ import httpx
 from .agent_base import RunUpdate
 from .agent_factory import create_session_manager
 from .config import AppConfig
+from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import MessageQueue
 from .stream_ui import deliver_streamed_reply
@@ -154,6 +155,7 @@ class VkCursorBot:
                 await self._send(peer_id, f"Режим по умолчанию: {args[0]}")
         elif command == "/status":
             git_on = self._config.git.enabled and await self._git.is_repo()
+            gh = "токен задан" if self._config.git.github_token else "токен не задан"
             await self._send(
                 peer_id,
                 textwrap.dedent(
@@ -164,9 +166,20 @@ class VkCursorBot:
                     mode: {self._config.mode}
                     git: {"включён" if git_on else "выкл / не репозиторий"}
                     auto_commit: {self._config.git.auto_commit}
+                    auto_push: {self._config.git.auto_push}
+                    github: {gh}
                     """
                 ).strip(),
             )
+        elif command == "/git":
+            if not self._config.git.enabled:
+                await self._send(peer_id, "Git отключён в config.yaml")
+            else:
+                await self._send(peer_id, await self._git.status_summary())
+        elif command == "/push":
+            await self._cmd_push(peer_id)
+        elif command == "/pull":
+            await self._cmd_pull(peer_id)
         elif command == "/queue":
             pending = self._queue.size(chat_key)
             if pending == 0:
@@ -208,9 +221,32 @@ class VkCursorBot:
         result = await self._git.commit(message)
         if result.ok:
             self._sessions.clear_git_checkpoint(chat_key)
-            await self._send(peer_id, f"✅ {result.message}")
-        else:
-            await self._send(peer_id, f"ℹ️ {result.message}")
+        await self._send(
+            peer_id,
+            await format_commit_reply(self._git, result, self._config.git),
+        )
+
+    async def _cmd_push(self, peer_id: int) -> None:
+        if not self._config.git.enabled:
+            await self._send(peer_id, "Git отключён в config.yaml")
+            return
+        if not self._config.git.github_token:
+            await self._send(peer_id, "Задайте git.github_token: ${GITHUB_TOKEN} в config.yaml и .env")
+            return
+        result = await self._git.push()
+        prefix = "✅" if result.ok else "❌"
+        await self._send(peer_id, f"{prefix} {result.message}")
+
+    async def _cmd_pull(self, peer_id: int) -> None:
+        if not self._config.git.enabled:
+            await self._send(peer_id, "Git отключён в config.yaml")
+            return
+        if not self._config.git.github_token:
+            await self._send(peer_id, "Задайте git.github_token: ${GITHUB_TOKEN} в config.yaml и .env")
+            return
+        result = await self._git.pull()
+        prefix = "✅" if result.ok else "❌"
+        await self._send(peer_id, f"{prefix} {result.message}")
 
     async def _cmd_undo(self, peer_id: int) -> None:
         if not self._config.git.enabled:
@@ -261,7 +297,7 @@ class VkCursorBot:
         )
         result = await self._git.commit(message)
         if result.ok:
-            return result.message
+            return await append_push_note(self._git, result.message, self._config.git)
         logger.warning("auto-commit failed (vk): %s", result.message)
         return None
 

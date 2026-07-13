@@ -5,6 +5,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+from .config import GitConfig
+
 logger = logging.getLogger(__name__)
 
 _STASH_MSG_RE = re.compile(r"^stash@\{\d+\}$")
@@ -23,10 +25,27 @@ class GitCommitResult:
     sha: str | None = None
 
 
+@dataclass
+class GitRemoteResult:
+    ok: bool
+    message: str
+
+
 class GitManager:
-    def __init__(self, workspace: str, *, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        workspace: str,
+        *,
+        enabled: bool = True,
+        remote: str = "origin",
+        branch: str = "",
+        github_token: str = "",
+    ) -> None:
         self._workspace = workspace
         self._enabled = enabled
+        self._remote = remote
+        self._branch = branch
+        self._github_token = github_token
         self._repo: bool | None = None
 
     @property
@@ -144,6 +163,122 @@ class GitManager:
 
         sha = await self._head_sha()
         return GitCommitResult(True, f"Коммит {sha[:7]}: {message}", sha=sha)
+
+    async def current_branch(self) -> str:
+        if self._branch:
+            return self._branch
+        code, stdout, stderr = await self._git("rev-parse", "--abbrev-ref", "HEAD")
+        if code != 0:
+            raise RuntimeError(stderr or "git rev-parse HEAD failed")
+        return stdout
+
+    async def remote_url(self, remote: str | None = None) -> str | None:
+        name = remote or self._remote
+        code, stdout, _ = await self._git("remote", "get-url", name)
+        return stdout if code == 0 else None
+
+    async def ahead_behind(self) -> tuple[int, int] | None:
+        branch = await self.current_branch()
+        ref = f"{self._remote}/{branch}"
+        code, stdout, _ = await self._git("rev-list", "--left-right", "--count", f"{ref}...HEAD")
+        if code != 0:
+            return None
+        parts = stdout.split()
+        if len(parts) != 2:
+            return None
+        return int(parts[0]), int(parts[1])
+
+    async def status_summary(self) -> str:
+        if not await self.is_repo():
+            return "workspace не является git-репозиторием"
+
+        branch = await self.current_branch()
+        dirty = await self._is_dirty()
+        remote_url = await self.remote_url() or "—"
+        lines = [
+            f"branch: {branch}",
+            f"remote: {self._remote} → {remote_url}",
+            f"изменения: {'есть' if dirty else 'нет'}",
+        ]
+
+        ab = await self.ahead_behind()
+        if ab is not None:
+            behind, ahead = ab
+            if ahead:
+                lines.append(f"впереди {self._remote} на {ahead} комм.")
+            if behind:
+                lines.append(f"позади {self._remote} на {behind} комм.")
+            if not ahead and not behind:
+                lines.append(f"синхронизировано с {self._remote}/{branch}")
+
+        if self._github_token:
+            lines.append("GitHub: токен задан (push/pull по HTTPS)")
+        else:
+            lines.append("GitHub: задайте ${GITHUB_TOKEN} в .env для push/pull по HTTPS")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _auth_url(url: str, token: str) -> str:
+        if not token or not url.startswith("https://"):
+            return url
+        return url.replace("https://", f"https://x-access-token:{token}@", 1)
+
+    async def push(self) -> GitRemoteResult:
+        if not await self.is_repo():
+            return GitRemoteResult(False, "workspace не является git-репозиторием")
+
+        branch = await self.current_branch()
+        if self._github_token:
+            url = await self.remote_url()
+            if not url:
+                return GitRemoteResult(False, f"remote «{self._remote}» не настроен")
+            code, stdout, stderr = await self._git(
+                "push",
+                self._auth_url(url, self._github_token),
+                branch,
+            )
+        else:
+            code, stdout, stderr = await self._git("push", self._remote, branch)
+
+        detail = (stderr or stdout).strip()
+        if code == 0:
+            msg = detail or f"отправлено на {self._remote}/{branch}"
+            return GitRemoteResult(True, msg)
+        return GitRemoteResult(False, detail or "git push failed")
+
+    async def pull(self) -> GitRemoteResult:
+        if not await self.is_repo():
+            return GitRemoteResult(False, "workspace не является git-репозиторием")
+
+        branch = await self.current_branch()
+        if self._github_token:
+            url = await self.remote_url()
+            if not url:
+                return GitRemoteResult(False, f"remote «{self._remote}» не настроен")
+            code, stdout, stderr = await self._git(
+                "pull",
+                self._auth_url(url, self._github_token),
+                branch,
+            )
+        else:
+            code, stdout, stderr = await self._git("pull", self._remote, branch)
+
+        detail = (stderr or stdout).strip()
+        if code == 0:
+            msg = detail or f"получено с {self._remote}/{branch}"
+            return GitRemoteResult(True, msg)
+        return GitRemoteResult(False, detail or "git pull failed")
+
+    @classmethod
+    def from_config(cls, workspace: str, git_cfg: GitConfig) -> GitManager:
+        return cls(
+            workspace,
+            enabled=git_cfg.enabled,
+            remote=git_cfg.remote,
+            branch=git_cfg.branch,
+            github_token=git_cfg.github_token,
+        )
 
     @staticmethod
     def format_commit_message(
