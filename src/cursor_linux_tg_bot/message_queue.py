@@ -41,6 +41,21 @@ class MessageQueue:
         queue = self._queues.get(chat_id)
         return queue.qsize() if queue else 0
 
+    def clear(self, chat_id: ChatKey) -> int:
+        """Remove pending messages; does not interrupt the item currently being handled."""
+        queue = self._queues.get(chat_id)
+        if queue is None:
+            return 0
+        removed = 0
+        while True:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            queue.task_done()
+            removed += 1
+        return removed
+
     def _get_queue(self, chat_id: ChatKey) -> asyncio.Queue[QueuedMessage]:
         if chat_id not in self._queues:
             self._queues[chat_id] = asyncio.Queue(maxsize=self._max_size)

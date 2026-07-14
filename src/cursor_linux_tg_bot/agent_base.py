@@ -13,6 +13,7 @@ class RunUpdate:
     text: str
     done: bool = False
     error: str | None = None
+    cancelled: bool = False
 
 
 class AgentSessionManager(Protocol):
@@ -44,3 +45,5 @@ class AgentSessionManager(Protocol):
         *,
         mode: str | None = None,
     ) -> AsyncIterator[RunUpdate]: ...
+
+    async def cancel_active(self, chat_id: ChatKey) -> bool: ...

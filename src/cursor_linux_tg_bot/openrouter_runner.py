@@ -114,6 +114,9 @@ class OpenRouterSessionManager:
         self._system_prefix = system_prefix.strip()
         self._client: httpx.AsyncClient | None = None
         self._locks: dict[ChatKey, asyncio.Lock] = {}
+        self._active_chats: set[ChatKey] = set()
+        self._cancelled: set[ChatKey] = set()
+        self._active_procs: dict[ChatKey, list[asyncio.subprocess.Process]] = {}
 
     def _system_message(self) -> dict[str, str]:
         return {
@@ -165,6 +168,23 @@ class OpenRouterSessionManager:
     async def reset_chat(self, chat_id: ChatKey) -> None:
         self._sessions.clear(chat_id)
 
+    async def cancel_active(self, chat_id: ChatKey) -> bool:
+        if chat_id not in self._active_chats:
+            return False
+        self._cancelled.add(chat_id)
+        for proc in self._active_procs.pop(chat_id, []):
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                logger.exception("cancel shell process failed chat_id=%s", chat_id)
+        return True
+
+    def _is_cancelled(self, chat_id: ChatKey) -> bool:
+        return chat_id in self._cancelled
+
     def _resolve_path(self, rel_path: str) -> Path:
         rel = (rel_path or ".").strip() or "."
         target = (self._workspace / rel).resolve()
@@ -177,19 +197,24 @@ class OpenRouterSessionManager:
             return text
         return text[: _MAX_TOOL_OUTPUT - 20] + "\n… [обрезано]"
 
-    async def _run_shell(self, command: str) -> str:
+    async def _run_shell(self, chat_id: ChatKey, command: str) -> str:
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=self._workspace,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        self._active_procs.setdefault(chat_id, []).append(proc)
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_SHELL_TIMEOUT_SEC)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
             return f"Ошибка: таймаут {_SHELL_TIMEOUT_SEC:.0f}с"
+        finally:
+            procs = self._active_procs.get(chat_id, [])
+            if proc in procs:
+                procs.remove(proc)
         out = (stdout or b"").decode(errors="replace")
         err = (stderr or b"").decode(errors="replace")
         code = proc.returncode or 0
@@ -233,7 +258,7 @@ class OpenRouterSessionManager:
             lines.append(f"… ещё {len(entries) - 500} элементов")
         return "\n".join(lines) or "(пусто)"
 
-    async def _execute_tool(self, call: _ToolCall) -> str:
+    async def _execute_tool(self, chat_id: ChatKey, call: _ToolCall) -> str:
         try:
             args = json.loads(call.arguments or "{}")
         except json.JSONDecodeError as err:
@@ -242,7 +267,7 @@ class OpenRouterSessionManager:
         name = call.name
         try:
             if name == "shell":
-                return await self._run_shell(str(args.get("command", "")))
+                return await self._run_shell(chat_id, str(args.get("command", "")))
             if name == "read_file":
                 return await self._read_file(str(args.get("path", "")))
             if name == "write_file":
@@ -267,6 +292,7 @@ class OpenRouterSessionManager:
 
     async def _stream_completion(
         self,
+        chat_id: ChatKey,
         messages: list[dict[str, Any]],
         *,
         use_tools: bool,
@@ -299,6 +325,8 @@ class OpenRouterSessionManager:
 
                 last_emit = 0.0
                 async for line in response.aiter_lines():
+                    if self._is_cancelled(chat_id):
+                        return
                     if not line.startswith("data: "):
                         continue
                     data = line[6:].strip()
@@ -378,51 +406,72 @@ class OpenRouterSessionManager:
         messages.append({"role": "user", "content": prompt})
 
         buffer = ""
-        for _ in range(self._config.max_tool_rounds):
-            final_result: _StreamResult | None = None
-            async for item in self._stream_completion(messages, use_tools=use_tools):
-                if isinstance(item, RunUpdate):
-                    buffer = item.text
-                    yield item
-                else:
-                    final_result = item
+        self._active_chats.add(chat_id)
+        self._cancelled.discard(chat_id)
+        try:
+            for _ in range(self._config.max_tool_rounds):
+                if self._is_cancelled(chat_id):
+                    yield RunUpdate(text=buffer.strip() or "Остановлено.", done=True, cancelled=True)
+                    return
 
-            if final_result is None:
-                yield RunUpdate(text="", done=True, error="OpenRouter: пустой ответ")
-                return
-            if final_result.error:
-                yield RunUpdate(text=buffer, done=True, error=final_result.error)
-                return
+                final_result: _StreamResult | None = None
+                async for item in self._stream_completion(chat_id, messages, use_tools=use_tools):
+                    if self._is_cancelled(chat_id):
+                        yield RunUpdate(text=buffer.strip() or "Остановлено.", done=True, cancelled=True)
+                        return
+                    if isinstance(item, RunUpdate):
+                        buffer = item.text
+                        yield item
+                    else:
+                        final_result = item
 
-            buffer = final_result.content
-            if not final_result.tool_calls:
-                messages.append({"role": "assistant", "content": final_result.content or buffer})
-                session.messages = messages
-                self._sessions.save(chat_id, session)
-                final_text = (final_result.content or buffer).strip() or "Готово."
-                yield RunUpdate(text=final_text, done=True)
-                return
+                if self._is_cancelled(chat_id):
+                    yield RunUpdate(text=buffer.strip() or "Остановлено.", done=True, cancelled=True)
+                    return
 
-            if not use_tools:
-                final_text = (final_result.content or buffer).strip() or "Готово."
-                yield RunUpdate(text=final_text, done=True)
-                return
+                if final_result is None:
+                    yield RunUpdate(text="", done=True, error="OpenRouter: пустой ответ")
+                    return
+                if final_result.error:
+                    yield RunUpdate(text=buffer, done=True, error=final_result.error)
+                    return
 
-            self._append_assistant_tool_message(messages, final_result)
-            for call in final_result.tool_calls:
-                result = await self._execute_tool(call)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": result,
-                    }
-                )
+                buffer = final_result.content
+                if not final_result.tool_calls:
+                    messages.append({"role": "assistant", "content": final_result.content or buffer})
+                    session.messages = messages
+                    self._sessions.save(chat_id, session)
+                    final_text = (final_result.content or buffer).strip() or "Готово."
+                    yield RunUpdate(text=final_text, done=True)
+                    return
 
-        yield RunUpdate(
-            text=buffer,
-            done=True,
-            error=f"Превышен лимит шагов инструментов ({self._config.max_tool_rounds}).",
-        )
-        session.messages = messages
-        self._sessions.save(chat_id, session)
+                if not use_tools:
+                    final_text = (final_result.content or buffer).strip() or "Готово."
+                    yield RunUpdate(text=final_text, done=True)
+                    return
+
+                self._append_assistant_tool_message(messages, final_result)
+                for call in final_result.tool_calls:
+                    if self._is_cancelled(chat_id):
+                        yield RunUpdate(text=buffer.strip() or "Остановлено.", done=True, cancelled=True)
+                        return
+                    result = await self._execute_tool(chat_id, call)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": result,
+                        }
+                    )
+
+            yield RunUpdate(
+                text=buffer,
+                done=True,
+                error=f"Превышен лимит шагов инструментов ({self._config.max_tool_rounds}).",
+            )
+            session.messages = messages
+            self._sessions.save(chat_id, session)
+        finally:
+            self._active_chats.discard(chat_id)
+            self._cancelled.discard(chat_id)
+            self._active_procs.pop(chat_id, None)

@@ -17,7 +17,7 @@ from .agent_factory import create_session_manager
 from .config import AppConfig, load_config
 from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
-from .message_queue import MessageQueue
+from .message_queue import ChatKey, MessageQueue
 from .network import enable_ipv4_only, telegram_transport
 from .stream_ui import deliver_streamed_reply
 from .textutil import split_message
@@ -173,6 +173,52 @@ class TelegramCursorBot:
             word = "сообщение" if pending == 1 else "сообщения" if 2 <= pending <= 4 else "сообщений"
             await update.message.reply_text(f"В очереди: {pending} {word}.")
 
+    async def _stop_chat(self, chat_id: ChatKey) -> str:
+        lock = self._sessions.lock_for(chat_id)
+        running = lock.locked()
+
+        canceled = False
+        if running:
+            canceled = await self._sessions.cancel_active(chat_id)
+
+        cleared = self._queue.clear(chat_id)
+
+        rolled_back = False
+        if running and self._config.git.enabled and await self._git.is_repo():
+            session = self._sessions.load_session(chat_id)
+            checkpoint = session.git_checkpoint
+            if checkpoint:
+                try:
+                    async with lock:
+                        await self._git.rollback(checkpoint)
+                        self._sessions.clear_git_checkpoint(chat_id)
+                    rolled_back = True
+                except Exception as err:
+                    logger.exception("git rollback on stop failed")
+                    return f"⚠️ Остановлено, но откат не удался: {err}"
+
+        parts: list[str] = []
+        if canceled:
+            parts.append("текущая задача прервана")
+        if cleared:
+            word = "сообщение" if cleared == 1 else "сообщения" if 2 <= cleared <= 4 else "сообщений"
+            parts.append(f"из очереди удалено {cleared} {word}")
+        if rolled_back:
+            parts.append("изменения откачены")
+        if not parts:
+            return "Нечего останавливать — нет активной задачи и очередь пуста."
+        return "✅ " + "; ".join(parts) + "."
+
+    async def cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message:
+            return
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        msg = await self._stop_chat(chat_id)
+        await update.message.reply_text(msg)
+
     async def cmd_commit(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
             await self._deny(update)
@@ -324,7 +370,7 @@ class TelegramCursorBot:
             stream = self._sessions.run_prompt(chat_id, prompt, mode=self._config.mode)
             final = await self._stream_reply(update, stream)
 
-            if final and not final.error and self._config.git.enabled:
+            if final and not final.error and not final.cancelled and self._config.git.enabled:
                 commit_note = await self._maybe_auto_commit(chat_id, user_text)
                 if commit_note:
                     await update.message.reply_text(f"📌 {commit_note}")
@@ -393,6 +439,7 @@ class TelegramCursorBot:
         app.add_handler(CommandHandler("push", self.cmd_push))
         app.add_handler(CommandHandler("pull", self.cmd_pull))
         app.add_handler(CommandHandler("queue", self.cmd_queue))
+        app.add_handler(CommandHandler("stop", self.cmd_stop))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_message))
         return app
 

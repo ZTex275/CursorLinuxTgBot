@@ -63,6 +63,8 @@ class OpenRouterCliSessionManager:
         self._system_prefix = system_prefix.strip()
         self._locks: dict[ChatKey, asyncio.Lock] = {}
         self._binary = self._resolve_binary(config.binary)
+        self._active_procs: dict[ChatKey, asyncio.subprocess.Process] = {}
+        self._cancelled: set[ChatKey] = set()
 
     def _resolve_binary(self, configured: str) -> str:
         candidate = configured.strip() or "orc"
@@ -144,6 +146,20 @@ class OpenRouterCliSessionManager:
     async def reset_chat(self, chat_id: ChatKey) -> None:
         self._sessions.clear(chat_id)
 
+    async def cancel_active(self, chat_id: ChatKey) -> bool:
+        proc = self._active_procs.get(chat_id)
+        if proc is None:
+            return False
+        self._cancelled.add(chat_id)
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        except Exception:
+            logger.exception("cancel orc process failed chat_id=%s", chat_id)
+        return True
+
     def _system_message(self, *, mode: str) -> dict[str, str]:
         plan_note = (
             "\nРежим plan: только план и советы, без выполнения команд на сервере."
@@ -183,7 +199,7 @@ class OpenRouterCliSessionManager:
         cmd.extend(self._config.extra_args)
         return cmd
 
-    async def _run_orc_ask(self, prompt: str) -> AsyncIterator[RunUpdate | str]:
+    async def _run_orc_ask(self, chat_id: ChatKey, prompt: str) -> AsyncIterator[RunUpdate | str]:
         cmd = self._ask_command(prompt)
         logger.debug("orc command: %s", " ".join(cmd[:3] + ["…"] if len(cmd) > 3 else cmd))
 
@@ -194,6 +210,7 @@ class OpenRouterCliSessionManager:
             cwd=self._workspace,
             env=self._subprocess_env(),
         )
+        self._active_procs[chat_id] = proc
 
         raw_buffer = ""
         last_emit = 0.0
@@ -225,8 +242,16 @@ class OpenRouterCliSessionManager:
             await proc.wait()
             yield RunUpdate(text="", done=True, error=f"OpenRouter CLI: {err}")
             return
+        finally:
+            was_cancelled = chat_id in self._cancelled
+            self._active_procs.pop(chat_id, None)
+            self._cancelled.discard(chat_id)
 
         cleaned = _clean_orc_output(raw_buffer)
+        if was_cancelled:
+            yield RunUpdate(text=cleaned.strip() or "Остановлено.", done=True, cancelled=True)
+            return
+
         if code != 0 and not cleaned:
             yield RunUpdate(
                 text="",
@@ -255,9 +280,9 @@ class OpenRouterCliSessionManager:
         buffer = ""
         final_text = ""
 
-        async for item in self._run_orc_ask(full_prompt):
+        async for item in self._run_orc_ask(chat_id, full_prompt):
             if isinstance(item, RunUpdate):
-                if item.error:
+                if item.error or item.cancelled:
                     yield item
                     return
                 buffer = item.text

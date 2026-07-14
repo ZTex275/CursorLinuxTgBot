@@ -4,7 +4,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 
-from .cursor_runner import RunUpdate
+from .agent_base import RunUpdate
 from .textutil import format_final_reply, split_message, working_status
 
 SendTextFn = Callable[[str], Awaitable[None]]
@@ -30,6 +30,10 @@ async def deliver_streamed_reply(
 
     async for item in stream:
         final_item = item
+        if item.cancelled:
+            await edit_status(status_message_id, "⛔ Остановлено пользователем.")
+            return final_item
+
         if item.error:
             await edit_status(status_message_id, f"❌ {item.error}\n\n⛔ Остановлено")
             return final_item

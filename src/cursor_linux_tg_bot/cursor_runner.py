@@ -38,6 +38,7 @@ class CursorSessionManager:
         self._client: AsyncClient | None = None
         self._agents: dict[ChatKey, object] = {}
         self._locks: dict[ChatKey, asyncio.Lock] = {}
+        self._active_runs: dict[ChatKey, object] = {}
 
     def _agent_options(self) -> AgentOptions:
         local = LocalAgentOptions(
@@ -88,6 +89,16 @@ class CursorSessionManager:
     async def reset_chat(self, chat_id: ChatKey) -> None:
         await self._discard_agent(chat_id)
         self._sessions.clear(chat_id)
+
+    async def cancel_active(self, chat_id: ChatKey) -> bool:
+        run = self._active_runs.pop(chat_id, None)
+        if run is None:
+            return False
+        try:
+            await run.cancel()
+        except Exception:
+            logger.exception("cancel cursor run failed chat_id=%s", chat_id)
+        return True
 
     async def _discard_agent(self, chat_id: ChatKey) -> None:
         agent = self._agents.pop(chat_id, None)
@@ -168,31 +179,38 @@ class CursorSessionManager:
             yield RunUpdate(text="", done=True, error="Cursor не запустился: internal error")
             return
 
+        self._active_runs[chat_id] = run
         buffer = ""
         last_emit = 0.0
 
-        async for message in run.messages():
-            if message.type != "assistant":
-                continue
-            for block in message.message.content:
-                if block.type != "text":
+        try:
+            async for message in run.messages():
+                if message.type != "assistant":
                     continue
-                buffer += block.text
-                now = time.monotonic()
-                if now - last_emit >= 0.5:
-                    last_emit = now
-                    yield RunUpdate(text=buffer, done=False)
+                for block in message.message.content:
+                    if block.type != "text":
+                        continue
+                    buffer += block.text
+                    now = time.monotonic()
+                    if now - last_emit >= 0.5:
+                        last_emit = now
+                        yield RunUpdate(text=buffer, done=False)
 
-        result = await run.wait()
-        if result.status == "error":
-            yield RunUpdate(text=buffer, done=True, error="Агент завершился с ошибкой.")
-            return
+            result = await run.wait()
+            if result.status == "cancelled":
+                yield RunUpdate(text=buffer.strip() or "Остановлено.", done=True, cancelled=True)
+                return
+            if result.status == "error":
+                yield RunUpdate(text=buffer, done=True, error="Агент завершился с ошибкой.")
+                return
 
-        final_text = buffer.strip()
-        if not final_text:
-            try:
-                final_text = (await run.text()).strip()
-            except Exception:
-                final_text = "Готово (без текстового ответа)."
+            final_text = buffer.strip()
+            if not final_text:
+                try:
+                    final_text = (await run.text()).strip()
+                except Exception:
+                    final_text = "Готово (без текстового ответа)."
 
-        yield RunUpdate(text=final_text or "Готово.", done=True)
+            yield RunUpdate(text=final_text or "Готово.", done=True)
+        finally:
+            self._active_runs.pop(chat_id, None)

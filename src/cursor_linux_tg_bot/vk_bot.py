@@ -18,7 +18,7 @@ from .agent_factory import create_session_manager
 from .config import AppConfig
 from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
-from .message_queue import MessageQueue
+from .message_queue import ChatKey, MessageQueue
 from .stream_ui import deliver_streamed_reply
 from .textutil import split_message
 
@@ -193,6 +193,8 @@ class VkCursorBot:
             await self._cmd_commit(peer_id, args)
         elif command == "/undo":
             await self._cmd_undo(peer_id)
+        elif command == "/stop":
+            await self._cmd_stop(peer_id)
         else:
             return False
         return True
@@ -279,6 +281,46 @@ class VkCursorBot:
             self._sessions.clear_git_checkpoint(chat_key)
             await self._send(peer_id, f"✅ {msg}")
 
+    async def _stop_chat(self, chat_key: ChatKey) -> str:
+        lock = self._sessions.lock_for(chat_key)
+        running = lock.locked()
+
+        canceled = False
+        if running:
+            canceled = await self._sessions.cancel_active(chat_key)
+
+        cleared = self._queue.clear(chat_key)
+
+        rolled_back = False
+        if running and self._config.git.enabled and await self._git.is_repo():
+            session = self._sessions.load_session(chat_key)
+            checkpoint = session.git_checkpoint
+            if checkpoint:
+                try:
+                    async with lock:
+                        await self._git.rollback(checkpoint)
+                        self._sessions.clear_git_checkpoint(chat_key)
+                    rolled_back = True
+                except Exception as err:
+                    logger.exception("git rollback on stop failed (vk)")
+                    return f"⚠️ Остановлено, но откат не удался: {err}"
+
+        parts: list[str] = []
+        if canceled:
+            parts.append("текущая задача прервана")
+        if cleared:
+            word = "сообщение" if cleared == 1 else "сообщения" if 2 <= cleared <= 4 else "сообщений"
+            parts.append(f"из очереди удалено {cleared} {word}")
+        if rolled_back:
+            parts.append("изменения откачены")
+        if not parts:
+            return "Нечего останавливать — нет активной задачи и очередь пуста."
+        return "✅ " + "; ".join(parts) + "."
+
+    async def _cmd_stop(self, peer_id: int) -> None:
+        chat_key = self._chat_key(peer_id)
+        await self._send(peer_id, await self._stop_chat(chat_key))
+
     # --- обработка сообщений ---
 
     async def _notify_queue_error(self, peer_id: int) -> None:
@@ -357,7 +399,7 @@ class VkCursorBot:
             stream = self._sessions.run_prompt(chat_key, prompt, mode=self._config.mode)
             final = await self._stream_reply(peer_id, stream)
 
-            if final and not final.error and self._config.git.enabled:
+            if final and not final.error and not final.cancelled and self._config.git.enabled:
                 commit_note = await self._maybe_auto_commit(user_text)
                 if commit_note:
                     await self._send(peer_id, f"📌 {commit_note}")
