@@ -152,6 +152,8 @@ class VkCursorBot:
                     self._config.cursor.mode = args[0]
                 if self._config.openrouter is not None:
                     self._config.openrouter.mode = args[0]
+                if self._config.openrouter_cli is not None:
+                    self._config.openrouter_cli.mode = args[0]
                 await self._send(peer_id, f"Режим по умолчанию: {args[0]}")
         elif command == "/status":
             git_on = self._config.git.enabled and await self._git.is_repo()

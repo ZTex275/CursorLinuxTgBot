@@ -68,6 +68,16 @@ if ! command -v agent >/dev/null && [[ ! -x "${SERVICE_HOME}/.local/bin/agent" ]
   }
 fi
 
+# --- OpenRouter CLI (orc) — опционально, если provider: openrouter_cli ---
+if ! command -v orc >/dev/null && [[ ! -x "${SERVICE_HOME}/.npm-global/bin/orc" ]]; then
+  if command -v npm >/dev/null; then
+    echo "==> OpenRouter CLI (orc) не найден. Устанавливаю..."
+    sudo -u "$SERVICE_USER" bash -c "npm install -g openrouter-cli" || {
+      echo "Не удалось установить openrouter-cli. Нужен для agent.provider: openrouter_cli" >&2
+    }
+  fi
+fi
+
 # --- venv в репозитории ---
 if [[ ! -d "${REPO_DIR}/.venv" ]]; then
   "$PYTHON" -m venv "${REPO_DIR}/.venv"
@@ -120,7 +130,7 @@ if [[ ! -f "${REPO_DIR}/config.yaml" ]]; then
 fi
 
 # --- systemd (запуск из репозитория) ---
-AGENT_BIN="${SERVICE_HOME}/.local/bin"
+AGENT_BIN="${SERVICE_HOME}/.local/bin:${SERVICE_HOME}/.npm-global/bin"
 cat >/etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=Telegram/VK bridge to Cursor local agent (Linux)

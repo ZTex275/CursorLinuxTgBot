@@ -78,6 +78,16 @@ class OpenRouterConfig:
 
 
 @dataclass
+class OpenRouterCliConfig:
+    api_key: str
+    model: str = ""
+    profile: str = "default"
+    binary: str = "orc"
+    mode: str = "agent"
+    extra_args: list[str] = field(default_factory=list)
+
+
+@dataclass
 class BotConfig:
     welcome_message: str
     system_prefix: str
@@ -107,6 +117,7 @@ class AppConfig:
     mode: str
     cursor: CursorConfig | None
     openrouter: OpenRouterConfig | None
+    openrouter_cli: OpenRouterCliConfig | None
     bot: BotConfig
     git: GitConfig
     sessions_dir: Path
@@ -116,12 +127,20 @@ class AppConfig:
         if self.provider == "openrouter":
             assert self.openrouter is not None
             return self.openrouter.model
+        if self.provider == "openrouter_cli":
+            assert self.openrouter_cli is not None
+            return self.openrouter_cli.model or f"profile:{self.openrouter_cli.profile}"
         assert self.cursor is not None
         return self.cursor.model
 
     @property
     def provider_label(self) -> str:
-        return "OpenRouter" if self.provider == "openrouter" else "Cursor"
+        labels = {
+            "cursor": "Cursor",
+            "openrouter": "OpenRouter",
+            "openrouter_cli": "OpenRouter CLI",
+        }
+        return labels.get(self.provider, self.provider)
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -134,6 +153,7 @@ def load_config(path: str | Path) -> AppConfig:
     agent = data.get("agent", {}) or {}
     cursor = data.get("cursor", {}) or {}
     openrouter = data.get("openrouter", {}) or {}
+    openrouter_cli = data.get("openrouter_cli", {}) or {}
     bot = data.get("bot", {})
     git = data.get("git", {})
 
@@ -148,8 +168,8 @@ def load_config(path: str | Path) -> AppConfig:
         )
 
     provider = str(agent.get("provider", "cursor")).strip().lower()
-    if provider not in {"cursor", "openrouter"}:
-        raise ValueError('agent.provider must be "cursor" or "openrouter"')
+    if provider not in {"cursor", "openrouter", "openrouter_cli"}:
+        raise ValueError('agent.provider must be "cursor", "openrouter" or "openrouter_cli"')
 
     workspace = str(agent.get("workspace") or cursor.get("workspace", "")).strip()
     if not workspace:
@@ -162,12 +182,18 @@ def load_config(path: str | Path) -> AppConfig:
     if not workspace_path.is_dir():
         raise ValueError(f"workspace does not exist: {workspace_path}")
 
-    mode = str(agent.get("mode") or cursor.get("mode") or openrouter.get("mode", "agent"))
+    mode = str(
+        agent.get("mode")
+        or cursor.get("mode")
+        or openrouter.get("mode")
+        or openrouter_cli.get("mode", "agent")
+    )
     if mode not in {"agent", "plan"}:
         raise ValueError('mode must be "agent" or "plan"')
 
     cursor_cfg: CursorConfig | None = None
     openrouter_cfg: OpenRouterConfig | None = None
+    openrouter_cli_cfg: OpenRouterCliConfig | None = None
 
     if provider == "cursor":
         api_key = cursor.get("api_key", "").strip()
@@ -180,7 +206,7 @@ def load_config(path: str | Path) -> AppConfig:
             mode=mode,
             setting_sources=list(cursor.get("setting_sources", [])),
         )
-    else:
+    elif provider == "openrouter":
         api_key = openrouter.get("api_key", "").strip()
         if not api_key:
             raise ValueError("openrouter.api_key is required (use ${OPENROUTER_API_KEY} in config.yaml)")
@@ -193,15 +219,28 @@ def load_config(path: str | Path) -> AppConfig:
             site_url=str(openrouter.get("site_url", "")).strip(),
             app_name=str(openrouter.get("app_name", "cursor-linux-tg-bot")).strip(),
         )
+    else:
+        api_key = openrouter_cli.get("api_key", "").strip()
+        if not api_key:
+            raise ValueError(
+                "openrouter_cli.api_key is required (use ${OPENROUTER_API_KEY} in config.yaml)"
+            )
+        openrouter_cli_cfg = OpenRouterCliConfig(
+            api_key=api_key,
+            model=str(openrouter_cli.get("model", "")).strip(),
+            profile=str(openrouter_cli.get("profile", "default")).strip() or "default",
+            binary=str(openrouter_cli.get("binary", "orc")).strip() or "orc",
+            mode=mode,
+            extra_args=[str(arg) for arg in openrouter_cli.get("extra_args", [])],
+        )
 
     sessions_dir = Path(data.get("sessions_dir", config_path.parent / "data" / "sessions")).expanduser()
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    default_welcome = (
-        "Отправьте сообщение — оно уйдёт в локальный OpenRouter-агент на этом сервере."
-        if provider == "openrouter"
-        else "Отправьте сообщение — оно уйдёт в локальный Cursor Agent на этом сервере."
-    )
+    default_welcome = {
+        "openrouter": "Отправьте сообщение — оно уйдёт в локальный OpenRouter-агент на этом сервере.",
+        "openrouter_cli": "Отправьте сообщение — оно уйдёт в OpenRouter CLI (orc) на этом сервере.",
+    }.get(provider, "Отправьте сообщение — оно уйдёт в локальный Cursor Agent на этом сервере.")
 
     return AppConfig(
         telegram=TelegramConfig(
@@ -225,6 +264,7 @@ def load_config(path: str | Path) -> AppConfig:
         mode=mode,
         cursor=cursor_cfg,
         openrouter=openrouter_cfg,
+        openrouter_cli=openrouter_cli_cfg,
         bot=BotConfig(
             welcome_message=bot.get("welcome_message", default_welcome),
             system_prefix=bot.get(

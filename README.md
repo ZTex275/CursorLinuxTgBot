@@ -1,11 +1,11 @@
 # Cursor Linux Telegram Bot
 
-Управляйте Linux-сервером из **Telegram** или **ВКонтакте**: сообщения уходят в локального агента (**Cursor Agent CLI** или **OpenRouter**), ответы возвращаются в чат.
+Управляйте Linux-сервером из **Telegram** или **ВКонтакте**: сообщения уходят в локального агента (**Cursor Agent CLI**, **OpenRouter API** или **OpenRouter CLI**), ответы возвращаются в чат.
 
 Проект рассчитан **только на Linux**. Установка — один скрипт, автозапуск — через **systemd**.
 
 ```
-Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter  →  shell / файлы на сервере
+Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter API | OpenRouter CLI (orc)
 ```
 
 ## Возможности
@@ -13,7 +13,7 @@ Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter  →  shel
 - Диалог с агентом с сохранением сессии между сообщениями
 - Потоковые ответы (обновление статуса по ходу работы)
 - **Telegram** и **VK** — можно включить оба или один
-- Провайдер агента: **Cursor** (локальный CLI) или **OpenRouter** (модели через API)
+- Провайдер агента: **Cursor** (локальный CLI), **OpenRouter** (API + shell/tools) или **OpenRouter CLI** ([orc](https://github.com/Ikarza/openrouter-cli))
 - Whitelist пользователей
 - Режимы `agent` (выполняет команды) и `plan` (только план)
 - **Git**: авто-коммит после ответа, `/commit`, `/undo`, `/git`, `/push`, `/pull`
@@ -28,7 +28,8 @@ Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter  →  shel
 | Python 3.11+ | Ставится скриптом `install.sh` | всегда |
 | [Cursor API key](https://cursor.com/dashboard/integrations) | `cursor_...` | `agent.provider: cursor` |
 | [Cursor Agent CLI](https://cursor.com/docs/cli/overview) | Ставится скриптом | `agent.provider: cursor` |
-| [OpenRouter API key](https://openrouter.ai/keys) | `sk-or-...` | `agent.provider: openrouter` |
+| [OpenRouter API key](https://openrouter.ai/keys) | `sk-or-...` | `agent.provider: openrouter` или `openrouter_cli` |
+| [OpenRouter CLI (orc)](https://github.com/Ikarza/openrouter-cli) | `npm install -g openrouter-cli` | `agent.provider: openrouter_cli` |
 | Telegram-бот | [@BotFather](https://t.me/BotFather) | Telegram |
 | Ваш Telegram user id | [@userinfobot](https://t.me/userinfobot) | Telegram |
 | Токен сообщества VK | Управление → Работа с API | VK (опционально) |
@@ -149,7 +150,7 @@ vk:
   allowed_user_ids: []   # пусто = разрешить всем
 
 agent:
-  provider: cursor       # cursor | openrouter
+  provider: cursor       # cursor | openrouter | openrouter_cli
   workspace: /home/myuser
   mode: agent            # agent | plan
 
@@ -161,6 +162,11 @@ cursor:
 openrouter:
   api_key: ${OPENROUTER_API_KEY}
   model: openrouter/free
+
+openrouter_cli:
+  api_key: ${OPENROUTER_API_KEY}
+  profile: default
+  binary: orc
 
 bot:
   system_prefix: |
@@ -194,6 +200,31 @@ openrouter:
 ```
 
 Cursor CLI и `CURSOR_API_KEY` не нужны. Агент выполняет shell-команды через OpenRouter API.
+
+### OpenRouter CLI (orc) вместо Cursor
+
+```yaml
+agent:
+  provider: openrouter_cli
+  workspace: /home/myuser
+
+openrouter_cli:
+  api_key: ${OPENROUTER_API_KEY}
+  model: anthropic/claude-3-sonnet-20240229   # или profile: default
+  binary: orc
+```
+
+Нужны Node.js 22+ и `npm install -g openrouter-cli`. Это чат через внешний CLI — **без shell/tools** на сервере (в отличие от `openrouter`).
+
+### Сравнение провайдеров
+
+| Провайдер | Как работает | Shell / файлы |
+|-----------|--------------|---------------|
+| `cursor` | Cursor Agent CLI + SDK | да |
+| `openrouter` | OpenRouter API + локальные tools | да |
+| `openrouter_cli` | subprocess `orc ask` | нет (только чат) |
+
+Активен **один** провайдер — задаётся в `agent.provider`.
 
 ### Подключить VK
 

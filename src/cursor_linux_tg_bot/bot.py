@@ -90,6 +90,8 @@ class TelegramCursorBot:
             self._config.cursor.mode = context.args[0]
         if self._config.openrouter is not None:
             self._config.openrouter.mode = context.args[0]
+        if self._config.openrouter_cli is not None:
+            self._config.openrouter_cli.mode = context.args[0]
         await update.message.reply_text(f"Режим по умолчанию: {context.args[0]}")
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

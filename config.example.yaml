@@ -23,7 +23,8 @@ vk:
   read_timeout: 30
 
 agent:
-  # cursor — локальный Cursor Agent CLI; openrouter — модели через OpenRouter API
+  # cursor — Cursor Agent CLI; openrouter — OpenRouter API + локальные tools;
+  # openrouter_cli — внешний CLI orc (https://github.com/Ikarza/openrouter-cli)
   provider: cursor
   # Общий workspace (если не задан — берётся из cursor.workspace)
   # workspace: /home/YOUR_USER
@@ -46,6 +47,13 @@ openrouter:
   max_tool_rounds: 25
   # site_url: https://example.com
   # app_name: cursor-linux-tg-bot
+
+openrouter_cli:
+  api_key: ${OPENROUTER_API_KEY}
+  # model: anthropic/claude-3-sonnet-20240229   # если пусто — модели из profile
+  profile: default
+  binary: orc
+  # extra_args: []
 
 bot:
   welcome_message: |
