@@ -19,6 +19,7 @@ from .config import AppConfig, provider_status_text
 from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
+from .model_switch import switch_model
 from .provider_switch import switch_provider
 from .stream_ui import deliver_streamed_reply
 from .textutil import split_message
@@ -170,6 +171,15 @@ class VkCursorBot:
                 self._sessions = new_sessions
                 if self._sessions_sync is not None:
                     self._sessions_sync(new_sessions)
+            await self._send(peer_id, message)
+        elif command == "/model":
+            new_model = " ".join(args).strip() if args else None
+            message = await switch_model(
+                self._config,
+                self._sessions,
+                new_model,
+                queues=(self._queue, *self._extra_queues),
+            )
             await self._send(peer_id, message)
         elif command == "/status":
             git_on = self._config.git.enabled and await self._git.is_repo()

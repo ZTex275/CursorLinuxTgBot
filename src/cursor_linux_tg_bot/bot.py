@@ -18,6 +18,7 @@ from .config import AppConfig, load_config, provider_status_text
 from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
+from .model_switch import switch_model
 from .network import enable_ipv4_only, telegram_transport
 from .provider_switch import switch_provider
 from .stream_ui import deliver_streamed_reply
@@ -117,6 +118,26 @@ class TelegramCursorBot:
             self._sessions = new_sessions
             if self._vk_bot is not None:
                 self._vk_bot._sessions = new_sessions
+        await update.message.reply_text(message)
+
+    async def cmd_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message:
+            return
+
+        queues = (self._queue,)
+        if self._vk_bot is not None:
+            queues = (self._queue, self._vk_bot._queue)
+
+        new_model = " ".join(context.args).strip() if context.args else None
+        message = await switch_model(
+            self._config,
+            self._sessions,
+            new_model,
+            queues=queues,
+        )
         await update.message.reply_text(message)
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -458,6 +479,7 @@ class TelegramCursorBot:
         app.add_handler(CommandHandler("new", self.cmd_new))
         app.add_handler(CommandHandler("mode", self.cmd_mode))
         app.add_handler(CommandHandler("provider", self.cmd_provider))
+        app.add_handler(CommandHandler("model", self.cmd_model))
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("commit", self.cmd_commit))
         app.add_handler(CommandHandler("undo", self.cmd_undo))

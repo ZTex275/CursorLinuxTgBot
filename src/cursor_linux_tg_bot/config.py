@@ -168,6 +168,37 @@ def provider_status_text(config: AppConfig) -> str:
     )
 
 
+def model_help_text() -> str:
+    return "Использование: /model <имя модели>"
+
+
+def model_status_text(config: AppConfig) -> str:
+    return f"model ({config.provider_label}): {config.model}\n{model_help_text()}"
+
+
+def apply_model(config: AppConfig, model: str) -> str | None:
+    value = model.strip()
+    if not value:
+        return "Укажите имя модели."
+
+    if config.provider == "cursor":
+        if config.cursor is None:
+            return "Провайдер Cursor не настроен."
+        config.cursor.model = value
+        return None
+
+    if config.provider == "openrouter":
+        if config.openrouter is None:
+            return "Провайдер OpenRouter не настроен."
+        config.openrouter.model = value
+        return None
+
+    if config.openrouter_cli is None:
+        return "Провайдер OpenRouter CLI не настроен."
+    config.openrouter_cli.model = value
+    return None
+
+
 def validate_provider_choice(config: AppConfig, provider: str) -> str | None:
     normalized = provider.strip().lower()
     if normalized not in PROVIDERS:

@@ -90,6 +90,10 @@ class CursorSessionManager:
         await self._discard_agent(chat_id)
         self._sessions.clear(chat_id)
 
+    async def invalidate_for_model_change(self) -> None:
+        for chat_id in list(self._agents.keys()):
+            await self._discard_agent(chat_id)
+
     async def cancel_active(self, chat_id: ChatKey) -> bool:
         run = self._active_runs.pop(chat_id, None)
         if run is None:

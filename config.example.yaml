@@ -59,7 +59,7 @@ bot:
   welcome_message: |
     Привет! Я прокси к локальному Cursor Agent на этом сервере.
     Просто напишите задачу — агент выполнит её на Linux.
-    /new — новая сессия, /mode agent|plan, /provider cursor|openrouter|openrouter_cli, /status — настройки.
+    /new — новая сессия, /mode agent|plan, /provider cursor|openrouter|openrouter_cli, /model <модель>, /status — настройки.
     /commit — зафиксировать изменения в git, /undo — откатить последнее сообщение.
     /stop — прервать текущую задачу, откатить её изменения и очистить очередь.
     /git — статус репозитория, /push и /pull — синхронизация с GitHub.
