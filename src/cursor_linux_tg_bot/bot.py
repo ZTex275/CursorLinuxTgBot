@@ -14,11 +14,12 @@ from telegram.request import HTTPXRequest
 
 from .agent_base import RunUpdate
 from .agent_factory import create_session_manager
-from .config import AppConfig, load_config
+from .config import AppConfig, load_config, provider_status_text
 from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
 from .network import enable_ipv4_only, telegram_transport
+from .provider_switch import switch_provider
 from .stream_ui import deliver_streamed_reply
 from .textutil import split_message
 from .vk_bot import VkCursorBot
@@ -94,6 +95,30 @@ class TelegramCursorBot:
             self._config.openrouter_cli.mode = context.args[0]
         await update.message.reply_text(f"Режим по умолчанию: {context.args[0]}")
 
+    async def cmd_provider(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message:
+            return
+
+        queues = (self._queue,)
+        if self._vk_bot is not None:
+            queues = (self._queue, self._vk_bot._queue)
+
+        new_provider = context.args[0].strip().lower() if context.args else None
+        new_sessions, message = await switch_provider(
+            self._config,
+            self._sessions,
+            new_provider,
+            queues=queues,
+        )
+        if new_sessions is not None:
+            self._sessions = new_sessions
+            if self._vk_bot is not None:
+                self._vk_bot._sessions = new_sessions
+        await update.message.reply_text(message)
+
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
             await self._deny(update)
@@ -104,7 +129,7 @@ class TelegramCursorBot:
         gh = "токен задан" if self._config.git.github_token else "токен не задан"
         text = textwrap.dedent(
             f"""
-            provider: {self._config.provider}
+            {provider_status_text(self._config)}
             workspace: {self._config.workspace}
             model: {self._config.model}
             mode: {self._config.mode}
@@ -432,6 +457,7 @@ class TelegramCursorBot:
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("new", self.cmd_new))
         app.add_handler(CommandHandler("mode", self.cmd_mode))
+        app.add_handler(CommandHandler("provider", self.cmd_provider))
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("commit", self.cmd_commit))
         app.add_handler(CommandHandler("undo", self.cmd_undo))
@@ -476,6 +502,9 @@ def main() -> None:
 
     if config.telegram.enabled:
         bot = TelegramCursorBot(config, sessions=sessions, git=git, vk_bot=vk_bot)
+        if vk_bot is not None:
+            vk_bot._sessions_sync = lambda manager: setattr(bot, "_sessions", manager)
+            vk_bot._extra_queues = (bot._queue,)
         bot.build_application().run_polling(drop_pending_updates=True, bootstrap_retries=-1)
     elif vk_bot is not None:
         logger.info("Telegram отключён — запускаю только VK-бота")

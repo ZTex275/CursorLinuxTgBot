@@ -41,6 +41,9 @@ class MessageQueue:
         queue = self._queues.get(chat_id)
         return queue.qsize() if queue else 0
 
+    def total_pending(self) -> int:
+        return sum(queue.qsize() for queue in self._queues.values())
+
     def clear(self, chat_id: ChatKey) -> int:
         """Remove pending messages; does not interrupt the item currently being handled."""
         queue = self._queues.get(chat_id)

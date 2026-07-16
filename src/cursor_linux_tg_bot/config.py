@@ -10,6 +10,13 @@ import yaml
 
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
+PROVIDERS = ("cursor", "openrouter", "openrouter_cli")
+PROVIDER_LABELS = {
+    "cursor": "Cursor",
+    "openrouter": "OpenRouter",
+    "openrouter_cli": "OpenRouter CLI",
+}
+
 
 def _expand_env(value: str) -> str:
     def repl(match: re.Match[str]) -> str:
@@ -135,12 +142,89 @@ class AppConfig:
 
     @property
     def provider_label(self) -> str:
-        labels = {
-            "cursor": "Cursor",
-            "openrouter": "OpenRouter",
-            "openrouter_cli": "OpenRouter CLI",
-        }
-        return labels.get(self.provider, self.provider)
+        return PROVIDER_LABELS.get(self.provider, self.provider)
+
+    def configured_providers(self) -> list[str]:
+        providers: list[str] = []
+        if self.cursor is not None:
+            providers.append("cursor")
+        if self.openrouter is not None:
+            providers.append("openrouter")
+        if self.openrouter_cli is not None:
+            providers.append("openrouter_cli")
+        return providers
+
+
+def provider_help_text() -> str:
+    return "Использование: /provider cursor | openrouter | openrouter_cli"
+
+
+def provider_status_text(config: AppConfig) -> str:
+    available = ", ".join(config.configured_providers()) or "нет"
+    return (
+        f"provider: {config.provider} ({config.provider_label})\n"
+        f"доступные: {available}\n"
+        f"{provider_help_text()}"
+    )
+
+
+def validate_provider_choice(config: AppConfig, provider: str) -> str | None:
+    normalized = provider.strip().lower()
+    if normalized not in PROVIDERS:
+        return f"Неизвестный провайдер. {provider_help_text()}"
+
+    if normalized == "cursor" and config.cursor is None:
+        return "Провайдер Cursor не настроен: задайте cursor.api_key (${CURSOR_API_KEY}) в config.yaml."
+    if normalized == "openrouter" and config.openrouter is None:
+        return "Провайдер OpenRouter не настроен: задайте openrouter.api_key (${OPENROUTER_API_KEY}) в config.yaml."
+    if normalized == "openrouter_cli" and config.openrouter_cli is None:
+        return (
+            "Провайдер OpenRouter CLI не настроен: задайте openrouter_cli.api_key "
+            "(${OPENROUTER_API_KEY}) в config.yaml."
+        )
+    return None
+
+
+def _build_cursor_config(cursor: dict, workspace_path: Path, mode: str) -> CursorConfig | None:
+    api_key = cursor.get("api_key", "").strip()
+    if not api_key:
+        return None
+    return CursorConfig(
+        api_key=api_key,
+        model=cursor.get("model", "composer-2.5"),
+        workspace=str(workspace_path),
+        mode=mode,
+        setting_sources=list(cursor.get("setting_sources", [])),
+    )
+
+
+def _build_openrouter_config(openrouter: dict, mode: str) -> OpenRouterConfig | None:
+    api_key = openrouter.get("api_key", "").strip()
+    if not api_key:
+        return None
+    return OpenRouterConfig(
+        api_key=api_key,
+        model=openrouter.get("model", "anthropic/claude-sonnet-4"),
+        mode=mode,
+        base_url=str(openrouter.get("base_url", "https://openrouter.ai/api/v1")).strip(),
+        max_tool_rounds=int(openrouter.get("max_tool_rounds", 25)),
+        site_url=str(openrouter.get("site_url", "")).strip(),
+        app_name=str(openrouter.get("app_name", "cursor-linux-tg-bot")).strip(),
+    )
+
+
+def _build_openrouter_cli_config(openrouter_cli: dict, mode: str) -> OpenRouterCliConfig | None:
+    api_key = openrouter_cli.get("api_key", "").strip()
+    if not api_key:
+        return None
+    return OpenRouterCliConfig(
+        api_key=api_key,
+        model=str(openrouter_cli.get("model", "")).strip(),
+        profile=str(openrouter_cli.get("profile", "default")).strip() or "default",
+        binary=str(openrouter_cli.get("binary", "orc")).strip() or "orc",
+        mode=mode,
+        extra_args=[str(arg) for arg in openrouter_cli.get("extra_args", [])],
+    )
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -191,47 +275,22 @@ def load_config(path: str | Path) -> AppConfig:
     if mode not in {"agent", "plan"}:
         raise ValueError('mode must be "agent" or "plan"')
 
-    cursor_cfg: CursorConfig | None = None
-    openrouter_cfg: OpenRouterConfig | None = None
-    openrouter_cli_cfg: OpenRouterCliConfig | None = None
+    cursor_cfg = _build_cursor_config(cursor, workspace_path, mode)
+    openrouter_cfg = _build_openrouter_config(openrouter, mode)
+    openrouter_cli_cfg = _build_openrouter_cli_config(openrouter_cli, mode)
 
-    if provider == "cursor":
-        api_key = cursor.get("api_key", "").strip()
-        if not api_key:
+    missing = {
+        "cursor": cursor_cfg is None,
+        "openrouter": openrouter_cfg is None,
+        "openrouter_cli": openrouter_cli_cfg is None,
+    }
+    if missing[provider]:
+        if provider == "cursor":
             raise ValueError("cursor.api_key is required (use ${CURSOR_API_KEY} in config.yaml)")
-        cursor_cfg = CursorConfig(
-            api_key=api_key,
-            model=cursor.get("model", "composer-2.5"),
-            workspace=str(workspace_path),
-            mode=mode,
-            setting_sources=list(cursor.get("setting_sources", [])),
-        )
-    elif provider == "openrouter":
-        api_key = openrouter.get("api_key", "").strip()
-        if not api_key:
+        if provider == "openrouter":
             raise ValueError("openrouter.api_key is required (use ${OPENROUTER_API_KEY} in config.yaml)")
-        openrouter_cfg = OpenRouterConfig(
-            api_key=api_key,
-            model=openrouter.get("model", "anthropic/claude-sonnet-4"),
-            mode=mode,
-            base_url=str(openrouter.get("base_url", "https://openrouter.ai/api/v1")).strip(),
-            max_tool_rounds=int(openrouter.get("max_tool_rounds", 25)),
-            site_url=str(openrouter.get("site_url", "")).strip(),
-            app_name=str(openrouter.get("app_name", "cursor-linux-tg-bot")).strip(),
-        )
-    else:
-        api_key = openrouter_cli.get("api_key", "").strip()
-        if not api_key:
-            raise ValueError(
-                "openrouter_cli.api_key is required (use ${OPENROUTER_API_KEY} in config.yaml)"
-            )
-        openrouter_cli_cfg = OpenRouterCliConfig(
-            api_key=api_key,
-            model=str(openrouter_cli.get("model", "")).strip(),
-            profile=str(openrouter_cli.get("profile", "default")).strip() or "default",
-            binary=str(openrouter_cli.get("binary", "orc")).strip() or "orc",
-            mode=mode,
-            extra_args=[str(arg) for arg in openrouter_cli.get("extra_args", [])],
+        raise ValueError(
+            "openrouter_cli.api_key is required (use ${OPENROUTER_API_KEY} in config.yaml)"
         )
 
     sessions_dir = Path(data.get("sessions_dir", config_path.parent / "data" / "sessions")).expanduser()

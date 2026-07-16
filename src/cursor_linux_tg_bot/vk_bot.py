@@ -15,10 +15,11 @@ import httpx
 
 from .agent_base import RunUpdate
 from .agent_factory import create_session_manager
-from .config import AppConfig
+from .config import AppConfig, provider_status_text
 from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
+from .provider_switch import switch_provider
 from .stream_ui import deliver_streamed_reply
 from .textutil import split_message
 
@@ -55,6 +56,8 @@ class VkCursorBot:
         self._vk = config.vk
         self._sessions = sessions
         self._git = git
+        self._sessions_sync = None
+        self._extra_queues: tuple[MessageQueue, ...] = ()
         self._queue = MessageQueue(max_size=config.bot.max_queue_size)
         self._queue.set_handler(self._process_user_message, on_error=self._notify_queue_error)
         self._client: httpx.AsyncClient | None = None
@@ -155,6 +158,19 @@ class VkCursorBot:
                 if self._config.openrouter_cli is not None:
                     self._config.openrouter_cli.mode = args[0]
                 await self._send(peer_id, f"Режим по умолчанию: {args[0]}")
+        elif command == "/provider":
+            new_provider = args[0].strip().lower() if args else None
+            new_sessions, message = await switch_provider(
+                self._config,
+                self._sessions,
+                new_provider,
+                queues=(self._queue, *self._extra_queues),
+            )
+            if new_sessions is not None:
+                self._sessions = new_sessions
+                if self._sessions_sync is not None:
+                    self._sessions_sync(new_sessions)
+            await self._send(peer_id, message)
         elif command == "/status":
             git_on = self._config.git.enabled and await self._git.is_repo()
             gh = "токен задан" if self._config.git.github_token else "токен не задан"
@@ -162,7 +178,7 @@ class VkCursorBot:
                 peer_id,
                 textwrap.dedent(
                     f"""
-                    provider: {self._config.provider}
+                    {provider_status_text(self._config)}
                     workspace: {self._config.workspace}
                     model: {self._config.model}
                     mode: {self._config.mode}
