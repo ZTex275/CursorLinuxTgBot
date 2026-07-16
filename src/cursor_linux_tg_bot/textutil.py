@@ -1,6 +1,35 @@
 from __future__ import annotations
 
+import re
 import time
+
+_MD_CODE_BLOCK_RE = re.compile(r"```(?:[^\n]*\n)?(.*?)```", re.DOTALL)
+_MD_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
+_MD_ITALIC_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)")
+_MD_STRIKE_RE = re.compile(r"~~(.+?)~~")
+_MD_HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_MD_ORPHAN_RE = re.compile(r"\*\*|__|`")
+
+
+def plain_text(text: str) -> str:
+    """Убирает Markdown-разметку для чатов без parse_mode."""
+    if not text:
+        return text
+
+    result = text
+    result = _MD_CODE_BLOCK_RE.sub(lambda match: match.group(1).strip(), result)
+    result = _MD_INLINE_CODE_RE.sub(r"\1", result)
+    result = _MD_IMAGE_RE.sub(r"\1", result)
+    result = _MD_LINK_RE.sub(r"\1", result)
+    result = _MD_STRIKE_RE.sub(r"\1", result)
+    result = _MD_BOLD_RE.sub(lambda match: match.group(1) or match.group(2), result)
+    result = _MD_ITALIC_RE.sub(lambda match: match.group(1) or match.group(2), result)
+    result = _MD_HEADER_RE.sub("", result)
+    result = _MD_ORPHAN_RE.sub("", result)
+    return result
 
 
 def split_message(text: str, limit: int) -> list[str]:
@@ -29,7 +58,7 @@ def working_status(label: str, started_at: float) -> str:
 
 
 def format_final_reply(text: str) -> str:
-    body = (text or "").strip()
+    body = plain_text((text or "").strip())
     if not body:
         body = "Агент завершил работу без текстового ответа."
     return f"{body}\n\n✅ Готово"
