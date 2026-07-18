@@ -21,6 +21,7 @@ from .message_queue import ChatKey, MessageQueue
 from .model_switch import switch_model
 from .network import enable_ipv4_only, telegram_transport
 from .provider_switch import switch_provider
+from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
 from .textutil import split_message
 from .vk_bot import VkCursorBot
@@ -41,6 +42,7 @@ class TelegramCursorBot:
         self._sessions = sessions or create_session_manager(config)
         self._git = git or GitManager.from_config(config.workspace, config.git)
         self._vk_bot = vk_bot
+        self._reloader = BotReloader(config.workspace, config.service)
         self._vk_task: asyncio.Task[None] | None = None
         self._queue = MessageQueue(max_size=config.bot.max_queue_size)
         self._queue.set_handler(self._process_user_message, on_error=self._notify_queue_error)
@@ -394,7 +396,12 @@ class TelegramCursorBot:
             return
 
         chat_id = update.effective_chat.id if update.effective_chat else 0
-        prompt = f"{self._config.bot.system_prefix}\n\n{user_text}"
+        prompt = augment_prompt(
+            self._config.bot.system_prefix,
+            user_text,
+            include_reload_hint=self._reloader.enabled(),
+        )
+        start_sha: str | None = None
 
         lock = self._sessions.lock_for(chat_id)
         async with lock:
@@ -407,10 +414,14 @@ class TelegramCursorBot:
                     try:
                         checkpoint = await self._git.create_checkpoint(chat_id)
                         self._sessions.set_git_checkpoint(chat_id, checkpoint, user_text)
+                        if self._reloader.enabled():
+                            start_sha = checkpoint.head_sha if checkpoint else await self._reloader.snapshot_sha(self._git)
                     except Exception as err:
                         logger.exception("git checkpoint failed")
                         await update.message.reply_text(f"❌ Git checkpoint: {err}")
                         return
+            elif self._reloader.enabled():
+                start_sha = await self._reloader.snapshot_sha(self._git)
 
             await update.message.chat.send_action(ChatAction.TYPING)
             stream = self._sessions.run_prompt(chat_id, prompt, mode=self._config.mode)
@@ -420,6 +431,13 @@ class TelegramCursorBot:
                 commit_note = await self._maybe_auto_commit(chat_id, user_text)
                 if commit_note:
                     await update.message.reply_text(f"📌 {commit_note}")
+
+            await self._reloader.maybe_restart_after_task(
+                git=self._git,
+                start_sha=start_sha,
+                final=final,
+                notify=lambda text: update.message.reply_text(text),
+            )
 
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):

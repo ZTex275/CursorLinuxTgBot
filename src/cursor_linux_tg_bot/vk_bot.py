@@ -21,6 +21,7 @@ from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
 from .model_switch import switch_model
 from .provider_switch import switch_provider
+from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
 from .textutil import split_message
 
@@ -57,6 +58,7 @@ class VkCursorBot:
         self._vk = config.vk
         self._sessions = sessions
         self._git = git
+        self._reloader = BotReloader(config.workspace, config.service)
         self._sessions_sync = None
         self._extra_queues: tuple[MessageQueue, ...] = ()
         self._queue = MessageQueue(max_size=config.bot.max_queue_size)
@@ -403,7 +405,12 @@ class VkCursorBot:
 
     async def _process_user_message(self, peer_id: int, user_text: str) -> None:
         chat_key = self._chat_key(peer_id)
-        prompt = f"{self._config.bot.system_prefix}\n\n{user_text}"
+        prompt = augment_prompt(
+            self._config.bot.system_prefix,
+            user_text,
+            include_reload_hint=self._reloader.enabled(),
+        )
+        start_sha: str | None = None
 
         lock = self._sessions.lock_for(chat_key)
         async with lock:
@@ -417,10 +424,14 @@ class VkCursorBot:
                     try:
                         checkpoint = await self._git.create_checkpoint(chat_key)
                         self._sessions.set_git_checkpoint(chat_key, checkpoint, user_text)
+                        if self._reloader.enabled():
+                            start_sha = checkpoint.head_sha if checkpoint else await self._reloader.snapshot_sha(self._git)
                     except Exception as err:
                         logger.exception("git checkpoint failed (vk)")
                         await self._send(peer_id, f"❌ Git checkpoint: {err}")
                         return
+            elif self._reloader.enabled():
+                start_sha = await self._reloader.snapshot_sha(self._git)
 
             stream = self._sessions.run_prompt(chat_key, prompt, mode=self._config.mode)
             final = await self._stream_reply(peer_id, stream)
@@ -429,6 +440,13 @@ class VkCursorBot:
                 commit_note = await self._maybe_auto_commit(user_text)
                 if commit_note:
                     await self._send(peer_id, f"📌 {commit_note}")
+
+            await self._reloader.maybe_restart_after_task(
+                git=self._git,
+                start_sha=start_sha,
+                final=final,
+                notify=lambda text: self._send(peer_id, text),
+            )
 
     async def _on_message(self, message: dict) -> None:
         peer_id = int(message.get("peer_id", 0))

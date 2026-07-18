@@ -104,6 +104,14 @@ class BotConfig:
 
 
 @dataclass
+class ServiceConfig:
+    auto_restart: bool = True
+    service_name: str = "cursor-linux-tg-bot"
+    restart_delay_sec: float = 3.0
+    pip_on_reload: bool = True
+
+
+@dataclass
 class GitConfig:
     enabled: bool = True
     auto_commit: bool = True
@@ -127,6 +135,7 @@ class AppConfig:
     openrouter_cli: OpenRouterCliConfig | None
     bot: BotConfig
     git: GitConfig
+    service: ServiceConfig
     sessions_dir: Path
 
     @property
@@ -271,6 +280,7 @@ def load_config(path: str | Path) -> AppConfig:
     openrouter_cli = data.get("openrouter_cli", {}) or {}
     bot = data.get("bot", {})
     git = data.get("git", {})
+    service = data.get("service", {}) or {}
 
     token = telegram.get("token", "").strip()
     vk_token = str(vk.get("token", "") or "").strip()
@@ -374,6 +384,12 @@ def load_config(path: str | Path) -> AppConfig:
             github_token=str(git.get("github_token", "")).strip(),
             commit_prefix=str(git.get("commit_prefix", "tg: ")),
             max_commit_message_length=int(git.get("max_commit_message_length", 120)),
+        ),
+        service=ServiceConfig(
+            auto_restart=bool(service.get("auto_restart", True)),
+            service_name=str(service.get("service_name", "cursor-linux-tg-bot")).strip() or "cursor-linux-tg-bot",
+            restart_delay_sec=float(service.get("restart_delay_sec", 3.0)),
+            pip_on_reload=bool(service.get("pip_on_reload", True)),
         ),
         sessions_dir=sessions_dir,
     )

@@ -68,9 +68,17 @@ bot:
     Пользователь управляет этим Linux-сервером через Telegram.
     Выполняй запросы на этой машине. Кратко отвечай по-русски.
     Не используй Markdown-разметку (**жирный**, `код`, заголовки #).
+    Не перезапускай сервис бота во время задачи — бот перезапустится сам после ответа.
   max_reply_length: 4000
   stream_edit_interval_sec: 2.0
   max_queue_size: 100   # макс. сообщений в очереди на один чат
+
+# Автоперезапуск systemd после изменений кода бота (ответ в чат уходит первым)
+service:
+  auto_restart: true
+  service_name: cursor-linux-tg-bot
+  restart_delay_sec: 3
+  pip_on_reload: true
 
 git:
   enabled: true
