@@ -97,10 +97,13 @@ class OpenRouterCliConfig:
 @dataclass
 class VoiceConfig:
     enabled: bool = True
-    model: str = "tiny"
+    model: str = "base"
     language: str = "ru"
     device: str = "cpu"
     compute_type: str = "int8"
+    beam_size: int = 5
+    best_of: int = 5
+    initial_prompt: str = ""
     show_recognized_text: bool = True
 
 
@@ -387,10 +390,13 @@ def load_config(path: str | Path) -> AppConfig:
             max_queue_size=int(bot.get("max_queue_size", 100)),
             voice=VoiceConfig(
                 enabled=bool(bot.get("voice", {}).get("enabled", True)),
-                model=str(bot.get("voice", {}).get("model", "tiny")).strip() or "tiny",
+                model=str(bot.get("voice", {}).get("model", "base")).strip() or "base",
                 language=str(bot.get("voice", {}).get("language", "ru")).strip(),
                 device=str(bot.get("voice", {}).get("device", "cpu")).strip() or "cpu",
                 compute_type=str(bot.get("voice", {}).get("compute_type", "int8")).strip() or "int8",
+                beam_size=int(bot.get("voice", {}).get("beam_size", 5)),
+                best_of=int(bot.get("voice", {}).get("best_of", 5)),
+                initial_prompt=str(bot.get("voice", {}).get("initial_prompt", "") or ""),
                 show_recognized_text=bool(bot.get("voice", {}).get("show_recognized_text", True)),
             ),
         ),

@@ -54,6 +54,9 @@ class TelegramCursorBot:
                 language=voice_cfg.language,
                 device=voice_cfg.device,
                 compute_type=voice_cfg.compute_type,
+                beam_size=voice_cfg.beam_size,
+                best_of=voice_cfg.best_of,
+                initial_prompt=voice_cfg.initial_prompt,
             )
             if voice_cfg.enabled
             else None

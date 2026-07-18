@@ -75,10 +75,13 @@ bot:
   max_queue_size: 100   # макс. сообщений в очереди на один чат
   voice:
     enabled: true
-    model: tiny          # tiny | base | small — чем больше, тем точнее и медленнее
+    model: base          # tiny | base | small — чем больше, тем точнее и медленнее
     language: ru         # пусто = автоопределение
     device: cpu
     compute_type: int8   # int8 для слабых ARM-серверов
+    beam_size: 5         # 1 быстрее, 5 точнее
+    best_of: 5
+    # initial_prompt: "..."  # опциональная подсказка словаря для Whisper
     show_recognized_text: true
 
 # Автоперезапуск systemd после изменений кода бота (ответ в чат уходит первым)
