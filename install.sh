@@ -53,6 +53,7 @@ echo "==> Python: $($PYTHON --version)"
 
 need_pkg=()
 "$PYTHON" -c "import venv" 2>/dev/null || need_pkg+=(python3-venv)
+command -v ffmpeg >/dev/null 2>&1 || need_pkg+=(ffmpeg)
 if ((${#need_pkg[@]})); then
   if command -v apt-get >/dev/null; then
     apt-get update -qq

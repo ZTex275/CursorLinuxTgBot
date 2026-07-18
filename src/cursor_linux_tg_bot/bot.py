@@ -24,6 +24,7 @@ from .provider_switch import switch_provider
 from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
 from .textutil import split_message
+from .voice_transcriber import VoiceTranscriber
 from .vk_bot import VkCursorBot
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,17 @@ class TelegramCursorBot:
         self._vk_task: asyncio.Task[None] | None = None
         self._queue = MessageQueue(max_size=config.bot.max_queue_size)
         self._queue.set_handler(self._process_user_message, on_error=self._notify_queue_error)
+        voice_cfg = config.bot.voice
+        self._voice_transcriber = (
+            VoiceTranscriber(
+                model=voice_cfg.model,
+                language=voice_cfg.language,
+                device=voice_cfg.device,
+                compute_type=voice_cfg.compute_type,
+            )
+            if voice_cfg.enabled
+            else None
+        )
 
     async def _notify_queue_error(self, update: Update) -> None:
         if update.message:
@@ -439,6 +451,16 @@ class TelegramCursorBot:
                 notify=lambda text: update.message.reply_text(text),
             )
 
+    async def _enqueue_text(self, update: Update, user_text: str) -> None:
+        if not update.message:
+            return
+
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        lock = self._sessions.lock_for(chat_id)
+        status = await self._queue.enqueue(chat_id, update, user_text, running=lock.locked())
+        if status:
+            await update.message.reply_text(status)
+
     async def on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
             await self._deny(update)
@@ -446,13 +468,51 @@ class TelegramCursorBot:
         if not update.message or not update.message.text:
             return
 
-        chat_id = update.effective_chat.id if update.effective_chat else 0
         user_text = update.message.text.strip()
-        lock = self._sessions.lock_for(chat_id)
+        if not user_text:
+            return
+        await self._enqueue_text(update, user_text)
 
-        status = await self._queue.enqueue(chat_id, update, user_text, running=lock.locked())
-        if status:
-            await update.message.reply_text(status)
+    async def on_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message:
+            return
+
+        voice_cfg = self._config.bot.voice
+        if not voice_cfg.enabled or self._voice_transcriber is None:
+            await update.message.reply_text("Распознавание голоса отключено в config.yaml.")
+            return
+
+        voice = update.message.voice
+        if voice is None:
+            return
+
+        await update.message.chat.send_action(ChatAction.TYPING)
+        status_msg = await update.message.reply_text("🎤 Распознаю голосовое сообщение…")
+
+        try:
+            tg_file = await context.bot.get_file(voice.file_id)
+            data = bytes(await tg_file.download_as_bytearray())
+            result = await self._voice_transcriber.transcribe_bytes(data, suffix=".ogg")
+        except Exception as err:
+            logger.exception("voice transcription failed")
+            await status_msg.edit_text(f"❌ Не удалось распознать голос: {err}")
+            return
+
+        user_text = result.text.strip()
+        if not user_text:
+            await status_msg.edit_text("❌ Не удалось распознать текст в голосовом сообщении.")
+            return
+
+        if voice_cfg.show_recognized_text:
+            preview = user_text if len(user_text) <= 500 else user_text[:497] + "…"
+            await status_msg.edit_text(f"🎤 Распознано: {preview}")
+        else:
+            await status_msg.delete()
+
+        await self._enqueue_text(update, user_text)
 
     async def post_init(self, application: Application) -> None:
         await self._sessions.start()
@@ -507,6 +567,7 @@ class TelegramCursorBot:
         app.add_handler(CommandHandler("queue", self.cmd_queue))
         app.add_handler(CommandHandler("stop", self.cmd_stop))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_message))
+        app.add_handler(MessageHandler(filters.VOICE, self.on_voice))
         return app
 
 

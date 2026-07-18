@@ -95,12 +95,23 @@ class OpenRouterCliConfig:
 
 
 @dataclass
+class VoiceConfig:
+    enabled: bool = True
+    model: str = "tiny"
+    language: str = "ru"
+    device: str = "cpu"
+    compute_type: str = "int8"
+    show_recognized_text: bool = True
+
+
+@dataclass
 class BotConfig:
     welcome_message: str
     system_prefix: str
     max_reply_length: int = 4000
     stream_edit_interval_sec: float = 2.0
     max_queue_size: int = 100
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
 
 
 @dataclass
@@ -374,6 +385,14 @@ def load_config(path: str | Path) -> AppConfig:
             max_reply_length=int(bot.get("max_reply_length", 4000)),
             stream_edit_interval_sec=float(bot.get("stream_edit_interval_sec", 2.0)),
             max_queue_size=int(bot.get("max_queue_size", 100)),
+            voice=VoiceConfig(
+                enabled=bool(bot.get("voice", {}).get("enabled", True)),
+                model=str(bot.get("voice", {}).get("model", "tiny")).strip() or "tiny",
+                language=str(bot.get("voice", {}).get("language", "ru")).strip(),
+                device=str(bot.get("voice", {}).get("device", "cpu")).strip() or "cpu",
+                compute_type=str(bot.get("voice", {}).get("compute_type", "int8")).strip() or "int8",
+                show_recognized_text=bool(bot.get("voice", {}).get("show_recognized_text", True)),
+            ),
         ),
         git=GitConfig(
             enabled=bool(git.get("enabled", True)),
