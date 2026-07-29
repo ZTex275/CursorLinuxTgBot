@@ -39,6 +39,10 @@ cursor:
   mode: agent
   # Пустой список = только inline-настройки SDK (без .cursor/rules из окружения)
   setting_sources: []
+  # Автосжатие длинной сессии перед переполнением контекста
+  auto_compact: true
+  max_turns_before_compact: 10      # после N успешных запросов — новая сессия с summary
+  max_input_tokens_before_compact: 400000  # или если последний запрос использовал столько input-токенов
 
 openrouter:
   api_key: ${OPENROUTER_API_KEY}

@@ -71,6 +71,9 @@ class CursorConfig:
     workspace: str
     mode: str = "agent"
     setting_sources: list[str] = field(default_factory=list)
+    auto_compact: bool = True
+    max_turns_before_compact: int = 10
+    max_input_tokens_before_compact: int = 400_000
 
 
 @dataclass
@@ -249,6 +252,9 @@ def _build_cursor_config(cursor: dict, workspace_path: Path, mode: str) -> Curso
         workspace=str(workspace_path),
         mode=mode,
         setting_sources=list(cursor.get("setting_sources", [])),
+        auto_compact=bool(cursor.get("auto_compact", True)),
+        max_turns_before_compact=int(cursor.get("max_turns_before_compact", 10)),
+        max_input_tokens_before_compact=int(cursor.get("max_input_tokens_before_compact", 400_000)),
     )
 
 

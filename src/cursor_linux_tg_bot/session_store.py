@@ -13,6 +13,9 @@ class ChatSession:
     messages: list[dict] | None = None
     git_checkpoint: GitCheckpoint | None = None
     last_user_message: str | None = None
+    turn_count: int = 0
+    last_input_tokens: int = 0
+    context_summary: str | None = None
 
     def to_dict(self) -> dict:
         data: dict = {}
@@ -24,6 +27,12 @@ class ChatSession:
             data["git_checkpoint"] = asdict(self.git_checkpoint)
         if self.last_user_message:
             data["last_user_message"] = self.last_user_message
+        if self.turn_count:
+            data["turn_count"] = self.turn_count
+        if self.last_input_tokens:
+            data["last_input_tokens"] = self.last_input_tokens
+        if self.context_summary:
+            data["context_summary"] = self.context_summary
         return data
 
     @classmethod
@@ -37,6 +46,9 @@ class ChatSession:
             messages=messages,
             git_checkpoint=checkpoint,
             last_user_message=data.get("last_user_message"),
+            turn_count=int(data.get("turn_count") or 0),
+            last_input_tokens=int(data.get("last_input_tokens") or 0),
+            context_summary=data.get("context_summary"),
         )
 
 
