@@ -15,6 +15,15 @@ fi
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="cursor-linux-tg-bot"
 
+for arg in "$@"; do
+  case "$arg" in
+    --allow-root)
+      ALLOW_ROOT_SERVICE=1
+      SERVICE_USER=root
+      ;;
+  esac
+done
+
 if [[ -n "${SERVICE_USER:-}" ]]; then
   :
 elif [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
@@ -24,8 +33,10 @@ else
 fi
 
 if [[ "$SERVICE_USER" == "root" && "${ALLOW_ROOT_SERVICE:-}" != "1" ]]; then
-  echo "Укажите пользователя: SERVICE_USER=myuser sudo ./install.sh" >&2
-  echo "Или для запуска от root: ALLOW_ROOT_SERVICE=1 SERVICE_USER=root sudo ./install.sh" >&2
+  echo "Укажите пользователя: sudo SERVICE_USER=myuser ./install.sh" >&2
+  echo "Или для запуска от root (переменные — после sudo, иначе sudo их сбросит):" >&2
+  echo "  sudo ALLOW_ROOT_SERVICE=1 SERVICE_USER=root ./install.sh" >&2
+  echo "  sudo ./install.sh --allow-root" >&2
   exit 1
 fi
 
@@ -36,18 +47,65 @@ echo "==> Репозиторий: ${REPO_DIR}"
 echo "    Пользователь сервиса: ${SERVICE_USER}"
 
 # --- Python 3.11+ ---
-PYTHON=""
-for candidate in python3.12 python3.11 "${SERVICE_HOME}/.local/bin/python3.11" python3; do
-  if command -v "$candidate" >/dev/null 2>&1; then
-    if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-      PYTHON="$candidate"
-      break
+find_python() {
+  local candidate uv_py
+  for candidate in python3.12 python3.11 \
+    "${SERVICE_HOME}/.local/bin/python3.11" \
+    "${HOME}/.local/bin/python3.11" \
+    python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+        PYTHON="$candidate"
+        return 0
+      fi
+    fi
+  done
+  if command -v uv >/dev/null 2>&1; then
+    uv_py="$(uv python find 3.11 2>/dev/null || true)"
+    if [[ -n "$uv_py" && -x "$uv_py" ]]; then
+      PYTHON="$uv_py"
+      return 0
     fi
   fi
-done
-if [[ -z "$PYTHON" ]]; then
-  echo "Нужен Python 3.11+. Установите: curl -LsSf https://astral.sh/uv/install.sh | sh && uv python install 3.11" >&2
-  exit 1
+  for candidate in "${HOME}/.local/share/uv/python/cpython-3.11"*/bin/python3; do
+    if [[ -x "$candidate" ]] && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+      PYTHON="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+install_python_via_uv() {
+  echo "==> Python 3.11+ не найден. Устанавливаю через uv..."
+  if ! command -v curl >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null; then
+      apt-get update -qq
+      apt-get install -y curl
+    else
+      echo "Нужен curl для установки uv." >&2
+      return 1
+    fi
+  fi
+  if ! command -v uv >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+  fi
+  uv python install 3.11
+  export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+}
+
+PYTHON=""
+if ! find_python; then
+  install_python_via_uv || {
+    echo "Не удалось установить Python 3.11+." >&2
+    echo "Вручную: curl -LsSf https://astral.sh/uv/install.sh | sh && uv python install 3.11" >&2
+    exit 1
+  }
+  find_python || {
+    echo "Python 3.11+ установлен, но не найден в PATH." >&2
+    exit 1
+  }
 fi
 echo "==> Python: $($PYTHON --version)"
 

@@ -70,6 +70,14 @@ sudo -E ./install.sh
 sudo SERVICE_USER=deploy ./install.sh
 ```
 
+Запуск systemd-сервиса от root (переменные окружения указывайте **после** `sudo`, иначе они не попадут в скрипт):
+
+```bash
+sudo ALLOW_ROOT_SERVICE=1 SERVICE_USER=root ./install.sh
+# или короче:
+sudo ./install.sh --allow-root
+```
+
 ## Структура после установки
 
 ```
