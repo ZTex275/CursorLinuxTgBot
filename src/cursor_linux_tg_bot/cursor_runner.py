@@ -282,12 +282,18 @@ class CursorSessionManager:
         buffer = ""
         last_emit = 0.0
         current_stage = "Подключение к агенту"
+        current_detail: str | None = None
 
         async for message in run.messages():
-            stage = stage_from_sdk_message(message)
-            if stage:
-                current_stage = stage
-                yield RunUpdate(text=buffer, done=False, stage=current_stage)
+            stage_info = stage_from_sdk_message(message)
+            if stage_info:
+                current_stage, current_detail = stage_info
+                yield RunUpdate(
+                    text=buffer,
+                    done=False,
+                    stage=current_stage,
+                    detail=current_detail,
+                )
 
             if message.type != "assistant":
                 continue
@@ -298,7 +304,12 @@ class CursorSessionManager:
                 now = time.monotonic()
                 if now - last_emit >= 0.5:
                     last_emit = now
-                    yield RunUpdate(text=buffer, done=False, stage=current_stage or "Формирую ответ")
+                    yield RunUpdate(
+                        text=buffer,
+                        done=False,
+                        stage=current_stage or "Формирую ответ",
+                        detail=current_detail,
+                    )
 
         result = await run.wait()
         if result.status == "cancelled":

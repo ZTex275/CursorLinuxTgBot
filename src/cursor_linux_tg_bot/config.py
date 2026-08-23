@@ -115,7 +115,7 @@ class BotConfig:
     welcome_message: str
     system_prefix: str
     max_reply_length: int = 4000
-    stream_edit_interval_sec: float = 10.0
+    stream_edit_interval_sec: float = 5.0
     max_queue_size: int = 100
     voice: VoiceConfig = field(default_factory=VoiceConfig)
 
@@ -392,7 +392,7 @@ def load_config(path: str | Path) -> AppConfig:
                 "Пользователь управляет Linux-сервером через Telegram. Выполняй запросы на этой машине.",
             ),
             max_reply_length=int(bot.get("max_reply_length", 4000)),
-            stream_edit_interval_sec=float(bot.get("stream_edit_interval_sec", 10.0)),
+            stream_edit_interval_sec=float(bot.get("stream_edit_interval_sec", 5.0)),
             max_queue_size=int(bot.get("max_queue_size", 100)),
             voice=VoiceConfig(
                 enabled=bool(bot.get("voice", {}).get("enabled", True)),

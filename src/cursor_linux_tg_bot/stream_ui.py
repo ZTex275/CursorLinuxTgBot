@@ -27,9 +27,25 @@ async def deliver_streamed_reply(
 ) -> RunUpdate | None:
     """Во время работы — статус с этапом и таймером; финал — полный ответ с «✅ Готово»."""
     task_started_at = started_at if started_at is not None else time.monotonic()
-    progress = {"stage": initial_stage}
+    progress: dict[str, str | None] = {
+        "stage": initial_stage,
+        "detail": None,
+        "last_text": "",
+    }
     final_item: RunUpdate | None = None
     stop_ticker = asyncio.Event()
+
+    async def render_status() -> None:
+        text = working_status(
+            provider_label,
+            task_started_at,
+            progress["stage"],
+            progress["detail"],
+        )
+        if text == progress["last_text"]:
+            return
+        progress["last_text"] = text
+        await edit_status(status_message_id, text)
 
     async def ticker() -> None:
         while not stop_ticker.is_set():
@@ -39,10 +55,7 @@ async def deliver_streamed_reply(
             except TimeoutError:
                 pass
             try:
-                await edit_status(
-                    status_message_id,
-                    working_status(provider_label, task_started_at, progress["stage"]),
-                )
+                await render_status()
             except Exception:
                 pass
 
@@ -50,8 +63,19 @@ async def deliver_streamed_reply(
     try:
         async for item in stream:
             final_item = item
+            changed = False
             if item.stage:
                 progress["stage"] = item.stage
+                changed = True
+            if item.detail is not None:
+                progress["detail"] = item.detail
+                changed = True
+
+            if changed:
+                try:
+                    await render_status()
+                except Exception:
+                    pass
 
             if item.cancelled:
                 await edit_status(status_message_id, "⛔ Остановлено пользователем.")

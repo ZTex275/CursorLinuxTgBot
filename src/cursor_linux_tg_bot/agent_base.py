@@ -15,6 +15,7 @@ class RunUpdate:
     error: str | None = None
     cancelled: bool = False
     stage: str | None = None
+    detail: str | None = None
 
 
 class AgentSessionManager(Protocol):
