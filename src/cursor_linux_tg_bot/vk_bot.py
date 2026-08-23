@@ -10,6 +10,7 @@ import asyncio
 import logging
 import random
 import textwrap
+import time
 
 import httpx
 
@@ -23,7 +24,7 @@ from .model_switch import switch_model
 from .provider_switch import switch_provider
 from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
-from .textutil import format_queue_error, split_message
+from .textutil import format_queue_error, split_message, working_status
 
 logger = logging.getLogger(__name__)
 
@@ -374,11 +375,21 @@ class VkCursorBot:
         logger.warning("auto-commit failed (vk): %s", result.message)
         return None
 
-    async def _stream_reply(self, peer_id: int, stream) -> RunUpdate | None:
-        status_id = await self._send(
-            peer_id,
-            f"⏳ {self._config.provider_label} выполняет задачу…\nПожалуйста, подождите",
-        )
+    async def _stream_reply(
+        self,
+        peer_id: int,
+        stream,
+        *,
+        status_id: int | None = None,
+        started_at: float | None = None,
+        initial_stage: str | None = "Запуск агента",
+    ) -> RunUpdate | None:
+        task_started_at = started_at if started_at is not None else time.monotonic()
+        if status_id is None:
+            status_id = await self._send(
+                peer_id,
+                working_status(self._config.provider_label, task_started_at, initial_stage),
+            )
         if status_id is None:
             status_id = 0
 
@@ -402,10 +413,30 @@ class VkCursorBot:
             edit_status=edit_status,
             delete_status=delete_status,
             status_message_id=str(status_id),
+            started_at=task_started_at,
+            initial_stage=initial_stage,
         )
 
     async def _process_user_message(self, peer_id: int, user_text: str) -> None:
         chat_key = self._chat_key(peer_id)
+        started_at = time.monotonic()
+        status_id = await self._send(
+            peer_id,
+            working_status(self._config.provider_label, started_at, "Принято сообщение"),
+        )
+
+        async def set_stage(stage: str) -> None:
+            if not status_id:
+                return
+            try:
+                await self._edit(
+                    peer_id,
+                    status_id,
+                    working_status(self._config.provider_label, started_at, stage),
+                )
+            except Exception:
+                pass
+
         prompt = augment_prompt(
             self._config.bot.system_prefix,
             user_text,
@@ -423,19 +454,28 @@ class VkCursorBot:
                     )
                 else:
                     try:
+                        await set_stage("Создаю git-чекпоинт")
                         checkpoint = await self._git.create_checkpoint(chat_key)
                         self._sessions.set_git_checkpoint(chat_key, checkpoint, user_text)
                         if self._reloader.enabled():
                             start_sha = checkpoint.head_sha if checkpoint else await self._reloader.snapshot_sha(self._git)
                     except Exception as err:
                         logger.exception("git checkpoint failed (vk)")
-                        await self._send(peer_id, f"❌ Git checkpoint: {err}")
+                        if status_id:
+                            await self._edit(peer_id, status_id, f"❌ Git checkpoint: {err}")
                         return
             elif self._reloader.enabled():
                 start_sha = await self._reloader.snapshot_sha(self._git)
 
+            await set_stage("Запуск агента")
             stream = self._sessions.run_prompt(chat_key, prompt, mode=self._config.mode)
-            final = await self._stream_reply(peer_id, stream)
+            final = await self._stream_reply(
+                peer_id,
+                stream,
+                status_id=status_id,
+                started_at=started_at,
+                initial_stage="Запуск агента",
+            )
 
             if final and not final.error and not final.cancelled and self._config.git.enabled:
                 commit_note = await self._maybe_auto_commit(user_text)

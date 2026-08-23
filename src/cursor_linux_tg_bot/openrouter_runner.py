@@ -13,6 +13,7 @@ import httpx
 from .agent_base import RunUpdate
 from .config import OpenRouterConfig
 from .session_store import ChatKey, ChatSession, SessionStore
+from .textutil import stage_from_tool_name
 
 logger = logging.getLogger(__name__)
 
@@ -353,7 +354,7 @@ class OpenRouterSessionManager:
                             now = time.monotonic()
                             if now - last_emit >= 0.5:
                                 last_emit = now
-                                yield RunUpdate(text=buffer, done=False)
+                                yield RunUpdate(text=buffer, done=False, stage="Генерирую ответ")
 
                         for raw_call in delta.get("tool_calls") or []:
                             index = int(raw_call.get("index", 0))
@@ -455,6 +456,11 @@ class OpenRouterSessionManager:
                     if self._is_cancelled(chat_id):
                         yield RunUpdate(text=buffer.strip() or "Остановлено.", done=True, cancelled=True)
                         return
+                    yield RunUpdate(
+                        text=buffer,
+                        done=False,
+                        stage=stage_from_tool_name(call.name),
+                    )
                     result = await self._execute_tool(chat_id, call)
                     messages.append(
                         {

@@ -20,6 +20,7 @@ from .context_compact import (
 )
 from .git_manager import GitCheckpoint
 from .session_store import ChatKey, ChatSession, SessionStore
+from .textutil import stage_from_sdk_message
 
 logger = logging.getLogger(__name__)
 
@@ -280,8 +281,14 @@ class CursorSessionManager:
     async def _stream_run(self, chat_id: ChatKey, run) -> AsyncIterator[RunUpdate]:
         buffer = ""
         last_emit = 0.0
+        current_stage = "Подключение к агенту"
 
         async for message in run.messages():
+            stage = stage_from_sdk_message(message)
+            if stage:
+                current_stage = stage
+                yield RunUpdate(text=buffer, done=False, stage=current_stage)
+
             if message.type != "assistant":
                 continue
             for block in message.message.content:
@@ -291,7 +298,7 @@ class CursorSessionManager:
                 now = time.monotonic()
                 if now - last_emit >= 0.5:
                     last_emit = now
-                    yield RunUpdate(text=buffer, done=False)
+                    yield RunUpdate(text=buffer, done=False, stage=current_stage or "Формирую ответ")
 
         result = await run.wait()
         if result.status == "cancelled":
@@ -321,11 +328,16 @@ class CursorSessionManager:
         *,
         mode: str | None = None,
     ) -> AsyncIterator[RunUpdate]:
+        session = self._sessions.load(chat_id)
+        if needs_compaction(session, self._cursor):
+            yield RunUpdate(text="", done=False, stage="Сжимаю контекст сессии")
+
         effective_prompt = await self._prepare_prompt(chat_id, prompt)
 
         for compact_attempt in range(2):
             run = None
             try:
+                yield RunUpdate(text="", done=False, stage="Запуск агента")
                 run = await self._start_run(chat_id, effective_prompt, mode=mode)
             except CursorAgentError as err:
                 yield RunUpdate(text="", done=True, error=f"Cursor не запустился: {err.message}")
@@ -355,6 +367,7 @@ class CursorSessionManager:
                     terminal_result.error,
                     chat_id,
                 )
+                yield RunUpdate(text="", done=False, stage="Сжимаю контекст и повторяю")
                 summary = await self._compact_session(chat_id)
                 effective_prompt = wrap_prompt_with_summary(summary, prompt)
                 continue

@@ -234,7 +234,7 @@ class OpenRouterCliSessionManager:
                 now = time.monotonic()
                 if cleaned and now - last_emit >= 0.5:
                     last_emit = now
-                    yield RunUpdate(text=cleaned, done=False)
+                    yield RunUpdate(text=cleaned, done=False, stage="Генерирую ответ")
 
             code = await proc.wait()
         except Exception as err:
@@ -280,6 +280,7 @@ class OpenRouterCliSessionManager:
         buffer = ""
         final_text = ""
 
+        yield RunUpdate(text="", done=False, stage="Генерирую ответ")
         async for item in self._run_orc_ask(chat_id, full_prompt):
             if isinstance(item, RunUpdate):
                 if item.error or item.cancelled:

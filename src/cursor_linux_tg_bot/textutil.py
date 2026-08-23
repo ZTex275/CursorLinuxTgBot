@@ -51,11 +51,73 @@ def split_message(text: str, limit: int) -> list[str]:
     return chunks
 
 
-def working_status(label: str, started_at: float) -> str:
+_TOOL_STAGE_LABELS: dict[str, str] = {
+    "Shell": "Выполняю команду в терминале",
+    "Read": "Читаю файл",
+    "Grep": "Ищу по файлам",
+    "Write": "Записываю файл",
+    "StrReplace": "Редактирую файл",
+    "Delete": "Удаляю файл",
+    "Glob": "Ищу файлы",
+    "Task": "Запускаю подзадачу",
+    "WebSearch": "Ищу в интернете",
+    "WebFetch": "Загружаю страницу",
+    "SwitchMode": "Переключаю режим",
+    "ReadLints": "Проверяю ошибки линтера",
+    "EditNotebook": "Редактирую notebook",
+    "Await": "Ожидаю завершения команды",
+    "TodoWrite": "Обновляю список задач",
+}
+
+
+def stage_from_tool_name(name: str) -> str:
+    clean = (name or "").strip()
+    if not clean:
+        return "Выполняю инструмент"
+    return _TOOL_STAGE_LABELS.get(clean, f"Инструмент: {clean}")
+
+
+def stage_from_sdk_message(message: object) -> str | None:
+    msg_type = getattr(message, "type", None)
+
+    if msg_type == "thinking":
+        return "Думаю над задачей"
+
+    if msg_type == "tool_call":
+        name = getattr(message, "name", "") or ""
+        status = str(getattr(message, "status", "") or "")
+        label = stage_from_tool_name(name)
+        if status == "running":
+            return label
+        if status == "completed":
+            return f"{label} — готово"
+        if status == "error":
+            return f"{label} — ошибка"
+        return label
+
+    if msg_type == "status":
+        text = (getattr(message, "message", "") or getattr(message, "status", "") or "").strip()
+        return f"Статус: {text}" if text else None
+
+    if msg_type == "task":
+        text = (getattr(message, "text", "") or getattr(message, "status", "") or "").strip()
+        return text or None
+
+    if msg_type == "assistant":
+        return "Формирую ответ"
+
+    return None
+
+
+def working_status(label: str, started_at: float, stage: str | None = None) -> str:
     elapsed = max(0, int(time.monotonic() - started_at))
-    phase = elapsed // 2
-    dots = "." * (1 + (phase % 3))
-    return f"⏳ {label} выполняет задачу{dots}\nПожалуйста, подождите ({elapsed} с)"
+    lines = [f"⏳ {label}"]
+    if stage:
+        lines.append(f"Этап: {stage}")
+    else:
+        lines.append("Этап: выполняется задача")
+    lines.append(f"Ожидание: {elapsed} с")
+    return "\n".join(lines)
 
 
 def format_final_reply(text: str) -> str:
