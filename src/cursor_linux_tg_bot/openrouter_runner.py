@@ -401,7 +401,7 @@ class OpenRouterSessionManager:
         use_tools = effective_mode == "agent"
 
         session = self._sessions.load(chat_id)
-        messages = list(session.messages)
+        messages = list(session.messages or [])
         if not messages:
             messages = [self._system_message()]
         messages.append({"role": "user", "content": prompt})
