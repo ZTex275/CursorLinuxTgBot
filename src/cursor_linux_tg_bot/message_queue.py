@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 ChatKey = int | str
 ProcessFn = Callable[[Any, str], Awaitable[None]]
-NotifyErrorFn = Callable[[Any], Awaitable[None]]
+NotifyErrorFn = Callable[[Any, BaseException], Awaitable[None]]
 
 
 @dataclass
@@ -106,11 +106,11 @@ class MessageQueue:
             item = await queue.get()
             try:
                 await self._handler(item.payload, item.user_text)
-            except Exception:
+            except Exception as err:
                 logger.exception("queued message failed chat_id=%s", chat_id)
                 if self._on_error is not None:
                     try:
-                        await self._on_error(item.payload)
+                        await self._on_error(item.payload, err)
                     except Exception:
                         logger.exception("failed to notify user about queue error")
             finally:

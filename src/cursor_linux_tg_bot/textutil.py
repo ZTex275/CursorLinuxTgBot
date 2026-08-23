@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+import traceback
 
 _MD_CODE_BLOCK_RE = re.compile(r"```(?:[^\n]*\n)?(.*?)```", re.DOTALL)
 _MD_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
@@ -62,3 +63,29 @@ def format_final_reply(text: str) -> str:
     if not body:
         body = "Агент завершил работу без текстового ответа."
     return f"{body}\n\n✅ Готово"
+
+
+def format_queue_error(err: BaseException, *, max_length: int = 4000) -> str:
+    header = "❌ Ошибка при обработке сообщения из очереди."
+    err_msg = str(err).strip() or "(без текста)"
+
+    parts = [
+        header,
+        "",
+        f"Тип: {type(err).__name__}",
+        f"Причина: {err_msg}",
+    ]
+
+    tb_lines = traceback.format_exception(type(err), err, err.__traceback__)
+    tb_text = "".join(tb_lines).strip()
+    if tb_text:
+        lines = tb_text.splitlines()
+        max_tb_lines = 12
+        if len(lines) > max_tb_lines:
+            lines = ["…"] + lines[-(max_tb_lines - 1) :]
+        parts.extend(["", "Трассировка:", *lines])
+
+    text = "\n".join(parts)
+    if len(text) > max_length:
+        return text[: max_length - 1] + "…"
+    return text

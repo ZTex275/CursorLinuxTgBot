@@ -23,7 +23,7 @@ from .network import enable_ipv4_only, telegram_transport
 from .provider_switch import switch_provider
 from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
-from .textutil import split_message
+from .textutil import format_queue_error, split_message
 from .voice_transcriber import VoiceTranscriber
 from .vk_bot import VkCursorBot
 
@@ -62,9 +62,10 @@ class TelegramCursorBot:
             else None
         )
 
-    async def _notify_queue_error(self, update: Update) -> None:
+    async def _notify_queue_error(self, update: Update, err: BaseException) -> None:
         if update.message:
-            await update.message.reply_text("❌ Ошибка при обработке сообщения из очереди.")
+            text = format_queue_error(err, max_length=self._config.bot.max_reply_length)
+            await self._send_chunks(update, text)
 
     async def _authorized(self, update: Update) -> bool:
         user = update.effective_user

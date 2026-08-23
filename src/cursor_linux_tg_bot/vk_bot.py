@@ -23,7 +23,7 @@ from .model_switch import switch_model
 from .provider_switch import switch_provider
 from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
-from .textutil import split_message
+from .textutil import format_queue_error, split_message
 
 logger = logging.getLogger(__name__)
 
@@ -351,8 +351,9 @@ class VkCursorBot:
 
     # --- обработка сообщений ---
 
-    async def _notify_queue_error(self, peer_id: int) -> None:
-        await self._send(peer_id, "❌ Ошибка при обработке сообщения из очереди.")
+    async def _notify_queue_error(self, peer_id: int, err: BaseException) -> None:
+        text = format_queue_error(err, max_length=self._config.bot.max_reply_length)
+        await self._send(peer_id, text)
 
     async def _maybe_auto_commit(self, user_text: str) -> str | None:
         if not self._config.git.enabled or not self._config.git.auto_commit:
