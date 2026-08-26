@@ -24,7 +24,7 @@ from .model_switch import switch_model
 from .provider_switch import switch_provider
 from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
-from .textutil import format_queue_error, split_message, working_status
+from .textutil import extract_command_payload, format_queue_error, split_message, working_status
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +219,7 @@ class VkCursorBot:
                 word = "сообщение" if pending == 1 else "сообщения" if 2 <= pending <= 4 else "сообщений"
                 await self._send(peer_id, f"В очереди: {pending} {word}.")
         elif command == "/commit":
-            await self._cmd_commit(peer_id, args)
+            await self._cmd_commit(peer_id, text)
         elif command == "/undo":
             await self._cmd_undo(peer_id)
         elif command == "/stop":
@@ -228,7 +228,7 @@ class VkCursorBot:
             return False
         return True
 
-    async def _cmd_commit(self, peer_id: int, args: list[str]) -> None:
+    async def _cmd_commit(self, peer_id: int, text: str) -> None:
         if not self._config.git.enabled:
             await self._send(peer_id, "Git отключён в config.yaml")
             return
@@ -237,8 +237,9 @@ class VkCursorBot:
             return
 
         chat_key = self._chat_key(peer_id)
-        if args:
-            message = " ".join(args)
+        payload = extract_command_payload(text, "commit")
+        if payload:
+            message = payload
         else:
             session = self._sessions.load_session(chat_key)
             message = session.last_user_message or ""

@@ -105,7 +105,8 @@ git:
   branch: ""
   github_token: ${GITHUB_TOKEN}
   commit_prefix: "tg: "
-  max_commit_message_length: 120
+  # 0 — без ограничения; иначе обрезка по символам
+  max_commit_message_length: 0
 
 # Сессии агента (локально в репозитории)
 sessions_dir: data/sessions

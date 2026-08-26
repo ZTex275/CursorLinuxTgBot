@@ -139,7 +139,7 @@ class GitConfig:
     branch: str = ""
     github_token: str = ""
     commit_prefix: str = "tg: "
-    max_commit_message_length: int = 120
+    max_commit_message_length: int = 0
 
 
 @dataclass
@@ -416,7 +416,7 @@ def load_config(path: str | Path) -> AppConfig:
             branch=str(git.get("branch", "")).strip(),
             github_token=str(git.get("github_token", "")).strip(),
             commit_prefix=str(git.get("commit_prefix", "tg: ")),
-            max_commit_message_length=int(git.get("max_commit_message_length", 120)),
+            max_commit_message_length=int(git.get("max_commit_message_length", 0)),
         ),
         service=ServiceConfig(
             auto_restart=bool(service.get("auto_restart", True)),

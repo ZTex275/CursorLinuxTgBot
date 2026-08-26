@@ -24,7 +24,7 @@ from .provider_switch import switch_provider
 from .platform import check_supported_platform
 from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
-from .textutil import format_queue_error, split_message, working_status
+from .textutil import extract_command_payload, format_queue_error, split_message, working_status
 from .voice_transcriber import VoiceTranscriber
 from .vk_bot import VkCursorBot
 
@@ -298,7 +298,11 @@ class TelegramCursorBot:
             return
 
         chat_id = update.effective_chat.id if update.effective_chat else 0
-        if context.args:
+        full_text = update.message.text or ""
+        payload = extract_command_payload(full_text, "commit")
+        if payload:
+            message = payload
+        elif context.args:
             message = " ".join(context.args)
         else:
             session = self._sessions.load_session(chat_id)

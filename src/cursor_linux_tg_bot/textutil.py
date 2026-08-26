@@ -16,6 +16,11 @@ _MD_HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _MD_ORPHAN_RE = re.compile(r"\*\*|__|`")
 
 
+def extract_command_payload(text: str, command: str) -> str:
+    pattern = rf"^/{re.escape(command)}(?:@\S+)?\s*"
+    return re.sub(pattern, "", text.lstrip(), count=1, flags=re.IGNORECASE).strip()
+
+
 def plain_text(text: str) -> str:
     """Убирает Markdown-разметку для чатов без parse_mode."""
     if not text:

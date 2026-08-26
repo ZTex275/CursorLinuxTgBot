@@ -285,8 +285,13 @@ class GitManager:
         user_text: str,
         *,
         prefix: str = "tg: ",
-        max_length: int = 120,
+        max_length: int = 0,
     ) -> str:
-        text = " ".join(user_text.split())
-        body = text[: max_length - len(prefix)] if len(prefix) + len(text) > max_length else text
-        return f"{prefix}{body}" if body else f"{prefix}update"
+        text = "\n".join(" ".join(line.split()) for line in user_text.splitlines()).strip()
+        if not text:
+            return f"{prefix}update"
+
+        message = f"{prefix}{text}"
+        if max_length > 0 and len(message) > max_length:
+            message = message[: max_length - 1] + "…"
+        return message
