@@ -8,13 +8,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from .platform import voice_initial_prompt
 
-# Подсказка для Whisper: типичные слова в голосовых задачах бота (RU).
-_DEFAULT_INITIAL_PROMPT = (
-    "Команды для Linux-сервера: статус, перезапуск, логи, git commit, push, pull, "
-    "установить пакет, проверить диск, память, процессы, systemd, docker, nginx."
-)
+logger = logging.getLogger(__name__)
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -45,7 +41,7 @@ class VoiceTranscriber:
         self._compute_type = compute_type
         self._beam_size = max(1, beam_size)
         self._best_of = max(1, best_of)
-        self._initial_prompt = (initial_prompt or _DEFAULT_INITIAL_PROMPT).strip() or None
+        self._initial_prompt = (initial_prompt or voice_initial_prompt()).strip() or None
         self._model = None
         self._lock = asyncio.Lock()
 

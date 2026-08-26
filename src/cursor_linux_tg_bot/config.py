@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from .platform import default_system_prefix
+
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
 PROVIDERS = ("cursor", "openrouter", "openrouter_cli")
@@ -320,7 +322,7 @@ def load_config(path: str | Path) -> AppConfig:
     if not workspace:
         raise ValueError(
             "workspace is required — задайте agent.workspace или cursor.workspace "
-            "(путь к Linux-директории, которой управляет агент)"
+            "(путь к рабочей директории, которой управляет агент)"
         )
 
     workspace_path = Path(workspace).expanduser().resolve()
@@ -389,7 +391,7 @@ def load_config(path: str | Path) -> AppConfig:
             welcome_message=bot.get("welcome_message", default_welcome),
             system_prefix=bot.get(
                 "system_prefix",
-                "Пользователь управляет Linux-сервером через Telegram. Выполняй запросы на этой машине.",
+                default_system_prefix(),
             ),
             max_reply_length=int(bot.get("max_reply_length", 4000)),
             stream_edit_interval_sec=float(bot.get("stream_edit_interval_sec", 5.0)),

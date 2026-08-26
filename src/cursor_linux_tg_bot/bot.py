@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import sys
 import textwrap
 import time
 from pathlib import Path
@@ -22,6 +21,7 @@ from .message_queue import ChatKey, MessageQueue
 from .model_switch import switch_model
 from .network import enable_ipv4_only, telegram_transport
 from .provider_switch import switch_provider
+from .platform import check_supported_platform
 from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
 from .textutil import format_queue_error, split_message, working_status
@@ -610,11 +610,9 @@ class TelegramCursorBot:
 
 
 def main() -> None:
-    if sys.platform != "linux":
-        print("cursor-linux-tg-bot работает только на Linux.", file=sys.stderr)
-        sys.exit(1)
+    check_supported_platform()
 
-    parser = argparse.ArgumentParser(description="Telegram → Cursor local agent bridge (Linux only)")
+    parser = argparse.ArgumentParser(description="Telegram → Cursor local agent bridge (Linux / Windows)")
     parser.add_argument(
         "-c",
         "--config",

@@ -1,21 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-import subprocess
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from .agent_base import RunUpdate
 from .config import ServiceConfig
 from .git_manager import GitManager
+from .platform import is_windows, reload_agent_hint, schedule_service_restart, service_is_enabled
 
 logger = logging.getLogger(__name__)
 
-RELOAD_AGENT_HINT = (
-    "Не перезапускай сервис бота (systemctl restart, ./install.sh, ./update.sh) во время задачи. "
-    "Если меняешь код бота — сохрани файлы и заверши ответ; бот сам перезапустится после ответа."
-)
+RELOAD_AGENT_HINT = reload_agent_hint()
 
 _BOT_RELOAD_PREFIXES = (
     "src/cursor_linux_tg_bot/",
@@ -71,30 +67,21 @@ class BotReloader:
         return any(path.endswith("pyproject.toml") for path in changed_files)
 
     async def _service_managed(self) -> bool:
-        proc = await asyncio.create_subprocess_exec(
-            "systemctl",
-            "is-enabled",
-            self._cfg.service_name,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        return (await proc.wait()) == 0
+        return await service_is_enabled(self._cfg.service_name)
 
     def schedule_restart(self, *, pip_install: bool) -> None:
-        delay = max(self._cfg.restart_delay_sec, 1.0)
-        parts = [f"sleep {delay:.1f}"]
-        if pip_install and self._cfg.pip_on_reload:
-            pip = self._workspace / ".venv" / "bin" / "pip"
-            if pip.is_file():
-                parts.append(f"{pip} install -e {self._workspace} -q")
-        parts.append(f"systemctl restart {self._cfg.service_name}")
-        cmd = " && ".join(parts)
-        logger.info("Запланирован перезапуск бота: %s", cmd)
-        subprocess.Popen(
-            ["bash", "-c", cmd],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        logger.info(
+            "Запланирован перезапуск бота через %.1f с (service=%s, pip=%s)",
+            self._cfg.restart_delay_sec,
+            self._cfg.service_name,
+            pip_install,
+        )
+        schedule_service_restart(
+            workspace=self._workspace,
+            service_name=self._cfg.service_name,
+            delay_sec=self._cfg.restart_delay_sec,
+            pip_install=pip_install,
+            pip_on_reload=self._cfg.pip_on_reload,
         )
 
     async def maybe_restart_after_task(
@@ -113,9 +100,11 @@ class BotReloader:
             return
 
         if not await self._service_managed():
+            backend = "служба Windows" if is_windows() else "systemd-сервис"
             logger.warning(
-                "Код бота изменён (%s), но systemd-сервис %s не включён — перезапуск пропущен",
+                "Код бота изменён (%s), но %s %s не найден — перезапуск пропущен",
                 ", ".join(changed),
+                backend,
                 self._cfg.service_name,
             )
             await notify("Код бота изменён. Перезапустите сервис вручную, чтобы применить изменения.")

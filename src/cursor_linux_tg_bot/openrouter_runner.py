@@ -13,6 +13,7 @@ import httpx
 from .agent_base import RunUpdate
 from .config import OpenRouterConfig
 from .session_store import ChatKey, ChatSession, SessionStore
+from .platform import shell_tool_description, shell_tool_param_description
 from .textutil import stage_from_tool_call
 
 logger = logging.getLogger(__name__)
@@ -21,68 +22,72 @@ _SHELL_TIMEOUT_SEC = 120.0
 _MAX_TOOL_OUTPUT = 30_000
 
 
-TOOLS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "shell",
-            "description": "Выполнить shell-команду в рабочей директории workspace.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "Команда для bash -lc"},
+def _build_tools() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "shell",
+                "description": shell_tool_description(),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": shell_tool_param_description()},
+                    },
+                    "required": ["command"],
                 },
-                "required": ["command"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Прочитать текстовый файл относительно workspace.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Относительный путь к файлу"},
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Прочитать текстовый файл относительно workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Относительный путь к файлу"},
+                    },
+                    "required": ["path"],
                 },
-                "required": ["path"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "Записать текст в файл относительно workspace (создаёт каталоги при необходимости).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Относительный путь к файлу"},
-                    "content": {"type": "string", "description": "Содержимое файла"},
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Записать текст в файл относительно workspace (создаёт каталоги при необходимости).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Относительный путь к файлу"},
+                        "content": {"type": "string", "description": "Содержимое файла"},
+                    },
+                    "required": ["path", "content"],
                 },
-                "required": ["path", "content"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_dir",
-            "description": "Список файлов и каталогов в директории workspace.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Относительный путь (пустая строка = корень workspace)",
-                        "default": "",
+        {
+            "type": "function",
+            "function": {
+                "name": "list_dir",
+                "description": "Список файлов и каталогов в директории workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Относительный путь (пустая строка = корень workspace)",
+                            "default": "",
+                        },
                     },
                 },
             },
         },
-    },
-]
+    ]
+
+
+TOOLS: list[dict[str, Any]] = _build_tools()
 
 
 @dataclass

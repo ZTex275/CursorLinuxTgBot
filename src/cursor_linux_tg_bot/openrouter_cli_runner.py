@@ -4,7 +4,6 @@ import asyncio
 import logging
 import os
 import re
-import shutil
 import time
 from pathlib import Path
 from typing import AsyncIterator
@@ -12,6 +11,7 @@ from typing import AsyncIterator
 from .agent_base import RunUpdate
 from .config import OpenRouterCliConfig
 from .git_manager import GitCheckpoint
+from .platform import is_binary_available, resolve_binary
 from .session_store import ChatKey, ChatSession, SessionStore
 
 logger = logging.getLogger(__name__)
@@ -62,29 +62,12 @@ class OpenRouterCliSessionManager:
         self._sessions = SessionStore(sessions_dir)
         self._system_prefix = system_prefix.strip()
         self._locks: dict[ChatKey, asyncio.Lock] = {}
-        self._binary = self._resolve_binary(config.binary)
+        self._binary = resolve_binary(config.binary)
         self._active_procs: dict[ChatKey, asyncio.subprocess.Process] = {}
         self._cancelled: set[ChatKey] = set()
 
-    def _resolve_binary(self, configured: str) -> str:
-        candidate = configured.strip() or "orc"
-        if os.path.isabs(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-        found = shutil.which(candidate)
-        if found:
-            return found
-        home = Path.home()
-        for path in (
-            home / ".npm-global" / "bin" / candidate,
-            home / ".local" / "bin" / candidate,
-            Path("/usr/local/bin") / candidate,
-        ):
-            if path.is_file() and os.access(path, os.X_OK):
-                return str(path)
-        return candidate
-
     async def start(self) -> None:
-        if not shutil.which(self._binary) and not os.access(self._binary, os.X_OK):
+        if not is_binary_available(self._binary):
             raise RuntimeError(
                 f"OpenRouter CLI ({self._binary}) не найден. "
                 "Установите: npm install -g openrouter-cli"
