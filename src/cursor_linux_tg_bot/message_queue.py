@@ -6,17 +6,21 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from .queue_store import QueueStore
+
 logger = logging.getLogger(__name__)
 
 ChatKey = int | str
 ProcessFn = Callable[[Any, str], Awaitable[None]]
 NotifyErrorFn = Callable[[Any, BaseException], Awaitable[None]]
+PayloadFactory = Callable[[dict[str, Any]], Any]
 
 
 @dataclass
 class QueuedMessage:
     payload: Any
     user_text: str
+    store_id: str | None = None
 
 
 class MessageQueue:
@@ -24,10 +28,21 @@ class MessageQueue:
 
     ``payload`` is opaque to the queue (telegram Update, VK peer id, ...)
     and is passed to the handler as-is.
+
+    When ``store`` is set, pending items are written to disk and restored
+    on startup via ``restore()``.
     """
 
-    def __init__(self, *, max_size: int = 100) -> None:
+    def __init__(
+        self,
+        *,
+        max_size: int = 100,
+        store: QueueStore | None = None,
+        queue_name: str = "default",
+    ) -> None:
         self._max_size = max_size
+        self._store = store
+        self._queue_name = queue_name
         self._queues: dict[ChatKey, asyncio.Queue[QueuedMessage]] = {}
         self._workers: dict[ChatKey, asyncio.Task[None]] = {}
         self._handler: ProcessFn | None = None
@@ -52,9 +67,11 @@ class MessageQueue:
         removed = 0
         while True:
             try:
-                queue.get_nowait()
+                item = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            if item.store_id and self._store is not None:
+                self._store.remove(item.store_id)
             queue.task_done()
             removed += 1
         return removed
@@ -77,13 +94,18 @@ class MessageQueue:
         user_text: str,
         *,
         running: bool = False,
+        persist_meta: dict[str, Any] | None = None,
     ) -> str | None:
         """Add message to queue. Returns user-facing status or None if starts next."""
         queue = self._get_queue(chat_id)
         if queue.full():
             return f"Очередь переполнена (макс. {self._max_size}). Дождитесь выполнения."
 
-        await queue.put(QueuedMessage(payload=payload, user_text=user_text))
+        store_id: str | None = None
+        if self._store is not None and persist_meta is not None:
+            store_id = self._store.add(self._queue_name, chat_id, user_text, persist_meta)
+
+        await queue.put(QueuedMessage(payload=payload, user_text=user_text, store_id=store_id))
         self._ensure_worker(chat_id)
 
         ahead = queue.qsize() - 1 + (1 if running else 0)
@@ -97,6 +119,39 @@ class MessageQueue:
         else:
             word = "задач"
         return f"📋 В очереди: впереди {ahead} {word}"
+
+    async def restore(self, payload_factory: PayloadFactory) -> int:
+        """Load persisted items into memory queues. Returns count restored."""
+        if self._store is None:
+            return 0
+
+        restored = 0
+        for item in self._store.list_queue(self._queue_name):
+            try:
+                payload = payload_factory(item.meta)
+            except Exception:
+                logger.exception("failed to restore queued item id=%s", item.id)
+                self._store.remove(item.id)
+                continue
+
+            queue = self._get_queue(item.chat_id)
+            if queue.full():
+                logger.warning(
+                    "queue full while restoring chat_id=%s item id=%s — stopping restore",
+                    item.chat_id,
+                    item.id,
+                )
+                break
+
+            await queue.put(
+                QueuedMessage(payload=payload, user_text=item.user_text, store_id=item.id)
+            )
+            self._ensure_worker(item.chat_id)
+            restored += 1
+
+        if restored:
+            logger.info("Restored %d queued message(s) for queue=%s", restored, self._queue_name)
+        return restored
 
     async def _worker(self, chat_id: ChatKey) -> None:
         queue = self._queues[chat_id]
@@ -114,6 +169,8 @@ class MessageQueue:
                     except Exception:
                         logger.exception("failed to notify user about queue error")
             finally:
+                if item.store_id and self._store is not None:
+                    self._store.remove(item.store_id)
                 queue.task_done()
 
             if queue.empty():

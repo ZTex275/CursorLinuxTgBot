@@ -18,6 +18,7 @@ from .config import AppConfig, load_config, provider_status_text
 from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
+from .queue_store import QueueStore
 from .model_switch import switch_model
 from .network import enable_ipv4_only, telegram_transport
 from .provider_switch import switch_provider
@@ -39,6 +40,7 @@ class TelegramCursorBot:
         sessions=None,
         git: GitManager | None = None,
         vk_bot: VkCursorBot | None = None,
+        queue_store: QueueStore | None = None,
     ) -> None:
         self._config = config
         self._sessions = sessions or create_session_manager(config)
@@ -46,7 +48,13 @@ class TelegramCursorBot:
         self._vk_bot = vk_bot
         self._reloader = BotReloader(config.workspace, config.service)
         self._vk_task: asyncio.Task[None] | None = None
-        self._queue = MessageQueue(max_size=config.bot.max_queue_size)
+        self._tg_app: Application | None = None
+        store = queue_store or QueueStore(config.sessions_dir.parent / "queue")
+        self._queue = MessageQueue(
+            max_size=config.bot.max_queue_size,
+            store=store,
+            queue_name="telegram",
+        )
         self._queue.set_handler(self._process_user_message, on_error=self._notify_queue_error)
         voice_cfg = config.bot.voice
         self._voice_transcriber = (
@@ -63,10 +71,16 @@ class TelegramCursorBot:
             else None
         )
 
-    async def _notify_queue_error(self, update: Update, err: BaseException) -> None:
-        if update.message:
-            text = format_queue_error(err, max_length=self._config.bot.max_reply_length)
-            await self._send_chunks(update, text)
+    async def _notify_queue_error(self, payload: Update | int, err: BaseException) -> None:
+        text = format_queue_error(err, max_length=self._config.bot.max_reply_length)
+        if isinstance(payload, Update):
+            if payload.message:
+                await self._send_chunks(payload, text)
+            return
+        if self._tg_app is not None:
+            bot = self._tg_app.bot
+            for chunk in split_message(text, self._config.bot.max_reply_length):
+                await bot.send_message(payload, chunk)
 
     async def _authorized(self, update: Update) -> bool:
         user = update.effective_user
@@ -367,24 +381,43 @@ class TelegramCursorBot:
 
     async def _stream_reply(
         self,
-        update: Update,
+        update: Update | None,
         stream,
         *,
+        chat_id: int | None = None,
         status=None,
         started_at: float | None = None,
         initial_stage: str | None = "Запуск агента",
     ) -> RunUpdate | None:
-        if not update.message:
-            return None
+        if update is not None:
+            if not update.message:
+                return None
+            chat_id = update.effective_chat.id if update.effective_chat else 0
+
+            async def send_text(text: str) -> None:
+                await self._send_chunks(update, text)
+        else:
+            if chat_id is None or self._tg_app is None:
+                return None
+            bot = self._tg_app.bot
+
+            async def send_text(text: str) -> None:
+                for chunk in split_message(text, self._config.bot.max_reply_length):
+                    await bot.send_message(chat_id, chunk)
 
         task_started_at = started_at if started_at is not None else time.monotonic()
         if status is None:
-            status = await update.message.reply_text(
-                working_status(self._config.provider_label, task_started_at, initial_stage)
-            )
-
-        async def send_text(text: str) -> None:
-            await self._send_chunks(update, text)
+            if update is not None and update.message:
+                status = await update.message.reply_text(
+                    working_status(self._config.provider_label, task_started_at, initial_stage)
+                )
+            elif chat_id is not None and self._tg_app is not None:
+                status = await self._tg_app.bot.send_message(
+                    chat_id,
+                    working_status(self._config.provider_label, task_started_at, initial_stage),
+                )
+            else:
+                return None
 
         async def edit_status(_msg_id: str, text: str) -> None:
             await status.edit_text(text)
@@ -424,13 +457,34 @@ class TelegramCursorBot:
         logger.warning("auto-commit failed: %s", result.message)
         return None
 
-    async def _process_user_message(self, update: Update, user_text: str) -> None:
-        if not update.message:
-            return
+    async def _process_user_message(self, payload: Update | int, user_text: str) -> None:
+        if isinstance(payload, Update):
+            if not payload.message:
+                return
+            chat_id = payload.effective_chat.id if payload.effective_chat else 0
+            update = payload
 
-        chat_id = update.effective_chat.id if update.effective_chat else 0
+            async def reply_text(text: str):
+                return await update.message.reply_text(text)
+
+            async def send_typing() -> None:
+                await update.message.chat.send_action(ChatAction.TYPING)
+        else:
+            chat_id = payload
+            update = None
+            if self._tg_app is None:
+                logger.error("cannot process restored telegram message: bot not initialized")
+                return
+            bot = self._tg_app.bot
+
+            async def reply_text(text: str):
+                return await bot.send_message(chat_id, text)
+
+            async def send_typing() -> None:
+                await bot.send_chat_action(chat_id, ChatAction.TYPING)
+
         started_at = time.monotonic()
-        status = await update.message.reply_text(
+        status = await reply_text(
             working_status(self._config.provider_label, started_at, "Принято сообщение")
         )
 
@@ -453,7 +507,7 @@ class TelegramCursorBot:
         async with lock:
             if self._config.git.enabled:
                 if not await self._git.is_repo():
-                    await update.message.reply_text(
+                    await reply_text(
                         "⚠️ workspace не git-репозиторий — /undo и авто-коммит недоступны."
                     )
                 else:
@@ -470,12 +524,13 @@ class TelegramCursorBot:
             elif self._reloader.enabled():
                 start_sha = await self._reloader.snapshot_sha(self._git)
 
-            await update.message.chat.send_action(ChatAction.TYPING)
+            await send_typing()
             await set_stage("Запуск агента")
             stream = self._sessions.run_prompt(chat_id, prompt, mode=self._config.mode)
             final = await self._stream_reply(
                 update,
                 stream,
+                chat_id=chat_id,
                 status=status,
                 started_at=started_at,
                 initial_stage="Запуск агента",
@@ -484,13 +539,13 @@ class TelegramCursorBot:
             if final and not final.error and not final.cancelled and self._config.git.enabled:
                 commit_note = await self._maybe_auto_commit(chat_id, user_text)
                 if commit_note:
-                    await update.message.reply_text(f"📌 {commit_note}")
+                    await reply_text(f"📌 {commit_note}")
 
             await self._reloader.maybe_restart_after_task(
                 git=self._git,
                 start_sha=start_sha,
                 final=final,
-                notify=lambda text: update.message.reply_text(text),
+                notify=reply_text,
             )
 
     async def _enqueue_text(self, update: Update, user_text: str) -> None:
@@ -499,7 +554,13 @@ class TelegramCursorBot:
 
         chat_id = update.effective_chat.id if update.effective_chat else 0
         lock = self._sessions.lock_for(chat_id)
-        status = await self._queue.enqueue(chat_id, update, user_text, running=lock.locked())
+        status = await self._queue.enqueue(
+            chat_id,
+            update,
+            user_text,
+            running=lock.locked(),
+            persist_meta={"type": "telegram", "chat_id": chat_id},
+        )
         if status:
             await update.message.reply_text(status)
 
@@ -557,10 +618,13 @@ class TelegramCursorBot:
         await self._enqueue_text(update, user_text)
 
     async def post_init(self, application: Application) -> None:
+        self._tg_app = application
         await self._sessions.start()
-        logger.info("%s started for workspace %s", self._config.provider_label, self._config.workspace)
+        await self._queue.restore(lambda meta: int(meta["chat_id"]))
         if self._vk_bot is not None:
+            await self._vk_bot.restore_queue()
             self._vk_task = asyncio.create_task(self._vk_bot.poll_loop())
+        logger.info("%s started for workspace %s", self._config.provider_label, self._config.workspace)
 
     async def post_shutdown(self, application: Application) -> None:
         if self._vk_task is not None:
@@ -639,10 +703,19 @@ def main() -> None:
 
     sessions = create_session_manager(config)
     git = GitManager.from_config(config.workspace, config.git)
-    vk_bot = VkCursorBot(config, sessions, git) if config.vk.enabled else None
+    queue_store = QueueStore(config.sessions_dir.parent / "queue")
+    vk_bot = (
+        VkCursorBot(config, sessions, git, queue_store=queue_store) if config.vk.enabled else None
+    )
 
     if config.telegram.enabled:
-        bot = TelegramCursorBot(config, sessions=sessions, git=git, vk_bot=vk_bot)
+        bot = TelegramCursorBot(
+            config,
+            sessions=sessions,
+            git=git,
+            vk_bot=vk_bot,
+            queue_store=queue_store,
+        )
         if vk_bot is not None:
             vk_bot._sessions_sync = lambda manager: setattr(bot, "_sessions", manager)
             vk_bot._extra_queues = (bot._queue,)

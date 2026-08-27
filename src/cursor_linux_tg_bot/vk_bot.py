@@ -20,6 +20,7 @@ from .config import AppConfig, provider_status_text
 from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
+from .queue_store import QueueStore
 from .model_switch import switch_model
 from .provider_switch import switch_provider
 from .service_reload import BotReloader, augment_prompt
@@ -54,6 +55,7 @@ class VkCursorBot:
         config: AppConfig,
         sessions,
         git: GitManager,
+        queue_store: QueueStore | None = None,
     ) -> None:
         self._config = config
         self._vk = config.vk
@@ -62,7 +64,12 @@ class VkCursorBot:
         self._reloader = BotReloader(config.workspace, config.service)
         self._sessions_sync = None
         self._extra_queues: tuple[MessageQueue, ...] = ()
-        self._queue = MessageQueue(max_size=config.bot.max_queue_size)
+        store = queue_store or QueueStore(config.sessions_dir.parent / "queue")
+        self._queue = MessageQueue(
+            max_size=config.bot.max_queue_size,
+            store=store,
+            queue_name="vk",
+        )
         self._queue.set_handler(self._process_user_message, on_error=self._notify_queue_error)
         self._client: httpx.AsyncClient | None = None
 
@@ -507,9 +514,18 @@ class VkCursorBot:
 
         chat_key = self._chat_key(peer_id)
         lock = self._sessions.lock_for(chat_key)
-        status = await self._queue.enqueue(chat_key, peer_id, text, running=lock.locked())
+        status = await self._queue.enqueue(
+            chat_key,
+            peer_id,
+            text,
+            running=lock.locked(),
+            persist_meta={"type": "vk", "peer_id": peer_id},
+        )
         if status:
             await self._send(peer_id, status)
+
+    async def restore_queue(self) -> None:
+        await self._queue.restore(lambda meta: int(meta["peer_id"]))
 
     # --- long poll ---
 
@@ -569,6 +585,7 @@ class VkCursorBot:
     async def run_standalone(self) -> None:
         """Запуск без Telegram: сам стартует и останавливает Cursor-мост."""
         await self._sessions.start()
+        await self.restore_queue()
         logger.info("%s started for workspace %s", self._config.provider_label, self._config.workspace)
         try:
             await self.poll_loop()
