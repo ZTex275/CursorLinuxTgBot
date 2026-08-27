@@ -41,7 +41,7 @@ def default_system_prefix() -> str:
 def reload_agent_hint() -> str:
     if is_windows():
         return (
-            "Не перезапускай сервис бота (Restart-Service, install.ps1, update.ps1) во время задачи. "
+            "Не перезапускай сервис бота (Restart-Service, install.ps1, update.ps1, uninstall.ps1) во время задачи. "
             "Если меняешь код бота — сохрани файлы и заверши ответ; бот сам перезапустится после ответа."
         )
     return (

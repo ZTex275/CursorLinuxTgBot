@@ -96,15 +96,24 @@ New-Service -Name $ServiceName `
     -BinaryPathName $binPath `
     -StartupType Automatic | Out-Null
 
+# Явно включаем автозапуск при загрузке Windows (start= auto).
+sc.exe config $ServiceName start= auto | Out-Null
+$startMode = (Get-CimInstance Win32_Service -Filter "Name='$ServiceName'").StartMode
+if ($startMode -ne "Auto") {
+    Write-Error "Не удалось включить автозагрузку службы (StartMode=$startMode)."
+}
+
 Start-Service -Name $ServiceName
 
 Write-Host ""
 Write-Host "Готово. Бот запускается из $RepoDir"
 Write-Host ""
-Write-Host "  Конфиг:   $RepoDir\config.yaml"
-Write-Host "  Секреты:  $RepoDir\.env"
-Write-Host "  Сессии:   $RepoDir\data\sessions"
-Write-Host "  Статус:   Get-Service $ServiceName"
-Write-Host "  Логи:     Event Viewer -> Windows Logs -> Application"
-Write-Host "  Обновить: .\update.ps1"
+Write-Host "  Конфиг:       $RepoDir\config.yaml"
+Write-Host "  Секреты:      $RepoDir\.env"
+Write-Host "  Сессии:       $RepoDir\data\sessions"
+Write-Host "  Автозагрузка: включена (служба стартует при загрузке Windows)"
+Write-Host "  Статус:       Get-Service $ServiceName"
+Write-Host "  Логи:         Event Viewer -> Windows Logs -> Application"
+Write-Host "  Обновить:     .\update.ps1"
+Write-Host "  Удалить:      .\uninstall.ps1"
 Write-Host ""
