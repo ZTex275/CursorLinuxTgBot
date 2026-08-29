@@ -21,6 +21,19 @@ _COMPACT_ERROR_MARKERS = (
     "limit exceeded",
 )
 
+_STALE_SESSION_ERROR_MARKERS = (
+    "unknown agent",
+    "not found",
+    "not_found",
+    "active run",
+    "agent_not_found",
+    "no such agent",
+    "expired",
+    "stale",
+    "unavailable",
+    "internal",
+)
+
 
 def needs_compaction(session: ChatSession, cfg: CursorConfig) -> bool:
     if not cfg.auto_compact:
@@ -32,10 +45,19 @@ def needs_compaction(session: ChatSession, cfg: CursorConfig) -> bool:
     return False
 
 
-def is_compactable_run_error(error_text: str | None) -> bool:
+def is_stale_session_run_error(error_text: str | None) -> bool:
     if not error_text:
         return True
     lowered = error_text.lower()
+    return any(marker in lowered for marker in _STALE_SESSION_ERROR_MARKERS)
+
+
+def is_compactable_run_error(error_text: str | None) -> bool:
+    if not error_text:
+        return False
+    lowered = error_text.lower()
+    if is_stale_session_run_error(error_text):
+        return False
     return any(marker in lowered for marker in _COMPACT_ERROR_MARKERS)
 
 

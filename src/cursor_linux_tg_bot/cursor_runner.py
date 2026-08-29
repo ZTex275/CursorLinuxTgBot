@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from cursor_sdk import AgentOptions, AsyncAgent, AsyncClient, CursorAgentError, LocalAgentOptions, SendOptions
-from cursor_sdk.errors import AgentNotFoundError, InternalServerError, NetworkError
+from cursor_sdk.errors import AgentNotFoundError, InternalServerError, NetworkError, NotFoundError
 
 from .agent_base import RunUpdate
 from .config import CursorConfig
 from .context_compact import (
     is_compactable_run_error,
+    is_stale_session_run_error,
     merge_summaries,
     needs_compaction,
     summary_from_agent_messages,
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_recoverable_agent_error(err: CursorAgentError) -> bool:
-    if isinstance(err, (AgentNotFoundError, InternalServerError, NetworkError)):
+    if isinstance(err, (AgentNotFoundError, InternalServerError, NetworkError, NotFoundError)):
         return True
     code = (err.code or err.proto_error_code or "").lower()
     return code in {
@@ -36,6 +37,7 @@ def _is_recoverable_agent_error(err: CursorAgentError) -> bool:
         "internal_server_error",
         "unavailable",
         "upstream_error",
+        "not_found",
     }
 
 
@@ -45,6 +47,7 @@ class CursorSessionManager:
         self._sessions = SessionStore(sessions_dir)
         self._client: AsyncClient | None = None
         self._agents: dict[ChatKey, object] = {}
+        self._agent_last_used: dict[ChatKey, float] = {}
         self._locks: dict[ChatKey, asyncio.Lock] = {}
         self._active_runs: dict[ChatKey, object] = {}
 
@@ -67,6 +70,7 @@ class CursorSessionManager:
         for agent in list(self._agents.values()):
             await agent.close()
         self._agents.clear()
+        self._agent_last_used.clear()
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -112,13 +116,16 @@ class CursorSessionManager:
             logger.exception("cancel cursor run failed chat_id=%s", chat_id)
         return True
 
-    async def _discard_agent(self, chat_id: ChatKey) -> None:
+    async def _discard_agent(self, chat_id: ChatKey, *, clear_agent_id: bool = True) -> None:
         agent = self._agents.pop(chat_id, None)
+        self._agent_last_used.pop(chat_id, None)
         if agent is not None:
             try:
                 await agent.close()
             except Exception:
                 pass
+        if not clear_agent_id:
+            return
         session = self._sessions.load(chat_id)
         if session.agent_id:
             session.agent_id = None
@@ -126,7 +133,13 @@ class CursorSessionManager:
 
     async def _restart_bridge(self) -> None:
         logger.warning("Перезапуск Cursor bridge")
+        for agent in list(self._agents.values()):
+            try:
+                await agent.close()
+            except Exception:
+                pass
         self._agents.clear()
+        self._agent_last_used.clear()
         if self._client is not None:
             try:
                 await self._client.aclose()
@@ -135,27 +148,79 @@ class CursorSessionManager:
             self._client = None
         self._client = await AsyncClient.launch_bridge(workspace=self._cursor.workspace)
 
+    async def _capture_summary_before_agent_loss(self, chat_id: ChatKey, agent_id: str) -> None:
+        session = self._sessions.load(chat_id)
+        summary_parts: list[str | None] = [session.context_summary]
+        if self._client is None:
+            return
+
+        try:
+            info = await AsyncAgent.get(
+                agent_id,
+                client=self._client,
+                cwd=self._cursor.workspace,
+                api_key=self._cursor.api_key,
+            )
+            if info.summary.strip():
+                summary_parts.append(info.summary.strip())
+        except Exception:
+            logger.debug("GetAgent summary unavailable for lost agent %s", agent_id, exc_info=True)
+
+        combined = merge_summaries(*summary_parts)
+        if not combined:
+            return
+        session.context_summary = combined
+        self._sessions.save(chat_id, session)
+
     async def _get_or_create_agent(self, chat_id: ChatKey):
-        if chat_id in self._agents:
-            return self._agents[chat_id]
+        cached = self._agents.get(chat_id)
+        last_used = self._agent_last_used.get(chat_id, 0.0)
+        idle_sec = time.monotonic() - last_used
+        if cached is not None and idle_sec < self._cursor.agent_idle_refresh_sec:
+            return cached
+        if cached is not None:
+            logger.info(
+                "Переподключение к агенту chat_id=%s после простоя %.0f с",
+                chat_id,
+                idle_sec,
+            )
+            await self._discard_agent(chat_id, clear_agent_id=False)
 
         assert self._client is not None
         options = self._agent_options()
         session = self._sessions.load(chat_id)
 
         agent = None
-        if session.agent_id:
+        old_agent_id = session.agent_id
+        if old_agent_id:
             try:
-                agent = await self._client.agents.resume(session.agent_id, options)
-            except CursorAgentError:
+                agent = await self._client.agents.resume(old_agent_id, options)
+            except CursorAgentError as err:
+                logger.warning(
+                    "Не удалось возобновить агента %s для chat_id=%s: %s",
+                    old_agent_id,
+                    chat_id,
+                    err.message,
+                )
+                await self._capture_summary_before_agent_loss(chat_id, old_agent_id)
                 agent = None
 
         if agent is None:
             agent = await self._client.agents.create(options)
+            session = self._sessions.load(chat_id)
             session.agent_id = agent.agent_id
+            session.turn_count = 0
+            session.last_input_tokens = 0
+            if old_agent_id and old_agent_id != agent.agent_id:
+                logger.info(
+                    "Создан новый агент для chat_id=%s (старый %s недоступен)",
+                    chat_id,
+                    old_agent_id,
+                )
             self._sessions.save(chat_id, session)
 
         self._agents[chat_id] = agent
+        self._agent_last_used[chat_id] = time.monotonic()
         return agent
 
     async def _resolve_agent_for_summary(self, chat_id: ChatKey):
@@ -230,19 +295,21 @@ class CursorSessionManager:
 
     async def _prepare_prompt(self, chat_id: ChatKey, prompt: str) -> str:
         session = self._sessions.load(chat_id)
-        if not needs_compaction(session, self._cursor):
-            return prompt
-
-        logger.info(
-            "Переполнение контекста chat_id=%s: turns=%s tokens=%s",
-            chat_id,
-            session.turn_count,
-            session.last_input_tokens,
-        )
-        summary = await self._compact_session(chat_id)
-        return wrap_prompt_with_summary(summary, prompt)
+        if needs_compaction(session, self._cursor):
+            logger.info(
+                "Переполнение контекста chat_id=%s: turns=%s tokens=%s",
+                chat_id,
+                session.turn_count,
+                session.last_input_tokens,
+            )
+            summary = await self._compact_session(chat_id)
+            return wrap_prompt_with_summary(summary, prompt)
+        if session.context_summary and session.turn_count == 0:
+            return wrap_prompt_with_summary(session.context_summary, prompt)
+        return prompt
 
     def _record_successful_run(self, chat_id: ChatKey, result) -> None:
+        self._agent_last_used[chat_id] = time.monotonic()
         session = self._sessions.load(chat_id)
         session.turn_count += 1
         usage = getattr(result, "usage", None)
@@ -319,6 +386,7 @@ class CursorSessionManager:
         if result.status == "error":
             detail = (result.result or "").strip()
             error_text = detail or "Агент завершился с ошибкой."
+            logger.warning("Агент завершился с ошибкой chat_id=%s: %s", chat_id, error_text)
             yield RunUpdate(text=buffer, done=True, error=error_text)
             return
 
@@ -372,14 +440,24 @@ class CursorSessionManager:
             if terminal_result.cancelled or not terminal_result.error:
                 return
 
-            if compact_attempt == 0 and is_compactable_run_error(terminal_result.error):
-                logger.warning(
-                    "Ошибка агента (%s), сжимаю контекст и повторяю для chat_id=%s",
-                    terminal_result.error,
-                    chat_id,
-                )
-                yield RunUpdate(text="", done=False, stage="Сжимаю контекст и повторяю")
-                summary = await self._compact_session(chat_id)
-                effective_prompt = wrap_prompt_with_summary(summary, prompt)
-                continue
+            if compact_attempt == 0 and terminal_result.error:
+                if is_stale_session_run_error(terminal_result.error):
+                    logger.warning(
+                        "Устаревшая сессия (%s), переподключаю агента для chat_id=%s",
+                        terminal_result.error,
+                        chat_id,
+                    )
+                    yield RunUpdate(text="", done=False, stage="Обновляю сессию и повторяю")
+                    await self._discard_agent(chat_id, clear_agent_id=False)
+                    continue
+                if is_compactable_run_error(terminal_result.error):
+                    logger.warning(
+                        "Ошибка агента (%s), сжимаю контекст и повторяю для chat_id=%s",
+                        terminal_result.error,
+                        chat_id,
+                    )
+                    yield RunUpdate(text="", done=False, stage="Сжимаю контекст и повторяю")
+                    summary = await self._compact_session(chat_id)
+                    effective_prompt = wrap_prompt_with_summary(summary, prompt)
+                    continue
             return

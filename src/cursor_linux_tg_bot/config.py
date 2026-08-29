@@ -76,6 +76,7 @@ class CursorConfig:
     auto_compact: bool = True
     max_turns_before_compact: int = 10
     max_input_tokens_before_compact: int = 400_000
+    agent_idle_refresh_sec: float = 3600.0
 
 
 @dataclass
@@ -257,6 +258,7 @@ def _build_cursor_config(cursor: dict, workspace_path: Path, mode: str) -> Curso
         auto_compact=bool(cursor.get("auto_compact", True)),
         max_turns_before_compact=int(cursor.get("max_turns_before_compact", 10)),
         max_input_tokens_before_compact=int(cursor.get("max_input_tokens_before_compact", 400_000)),
+        agent_idle_refresh_sec=float(cursor.get("agent_idle_refresh_sec", 3600.0)),
     )
 
 
