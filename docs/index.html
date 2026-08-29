@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cursor Linux Telegram Bot</title>
+  <meta name="description" content="Управление Linux-сервером или Windows-ПК из Telegram и ВКонтакте через Cursor Agent, OpenRouter или orc.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <p class="badge">Telegram · VK · Linux · Windows</p>
+      <h1>Cursor Linux Telegram Bot</h1>
+      <p class="lead">
+        Управляйте машиной из мессенджера: сообщения уходят локальному агенту,
+        ответы возвращаются в чат.
+      </p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/ZTex275/CursorLinuxTgBot">GitHub</a>
+        <a class="btn" href="https://github.com/ZTex275/CursorLinuxTgBot#быстрая-установка-linux">Установка</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section>
+      <h2>Схема работы</h2>
+      <pre class="diagram">Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter | orc</pre>
+    </section>
+
+    <section>
+      <h2>Возможности</h2>
+      <ul>
+        <li>Диалог с сохранением сессии между сообщениями</li>
+        <li>Потоковые ответы и статус выполнения</li>
+        <li>Telegram и VK — можно включить оба или один</li>
+        <li>Голосовые сообщения через Whisper</li>
+        <li>Провайдеры: Cursor CLI, OpenRouter API, OpenRouter CLI (orc)</li>
+        <li>Git: авто-коммит, /push, /pull, /undo</li>
+        <li>Очередь сообщений с сохранением на диск</li>
+        <li>Автозапуск и автоперезапуск службы</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Быстрая установка (Linux)</h2>
+      <pre><code>git clone https://github.com/ZTex275/CursorLinuxTgBot.git
+cd CursorLinuxTgBot
+chmod +x install.sh uninstall.sh update.sh
+sudo ./install.sh</code></pre>
+    </section>
+
+    <section>
+      <h2>Быстрая установка (Windows)</h2>
+      <pre><code>git clone https://github.com/ZTex275/CursorLinuxTgBot.git
+cd CursorLinuxTgBot
+.\install.ps1</code></pre>
+      <p>Нужны Python 3.11+, Cursor Agent CLI и PowerShell от администратора.</p>
+    </section>
+
+    <section>
+      <h2>Команды в чате</h2>
+      <table>
+        <thead>
+          <tr><th>Команда</th><th>Действие</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>/start</td><td>Справка</td></tr>
+          <tr><td>/new</td><td>Новая сессия</td></tr>
+          <tr><td>/mode agent|plan</td><td>Режим работы</td></tr>
+          <tr><td>/provider …</td><td>Сменить провайдера</td></tr>
+          <tr><td>/status</td><td>Статус агента и git</td></tr>
+          <tr><td>/commit, /push, /pull, /undo</td><td>Работа с git</td></tr>
+          <tr><td>/stop</td><td>Прервать задачу и очистить очередь</td></tr>
+          <tr><td>Текст или голос</td><td>Задача для агента</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="warn">
+      <h2>Безопасность</h2>
+      <p>
+        Агент может выполнять shell-команды и менять файлы в workspace.
+        Обязательно укажите <strong>allowed_user_ids</strong> и ограничьте права пользователя службы.
+      </p>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <p>MIT License · <a href="https://github.com/ZTex275/CursorLinuxTgBot">ZTex275/CursorLinuxTgBot</a></p>
+    </div>
+  </footer>
+</body>
+</html>
