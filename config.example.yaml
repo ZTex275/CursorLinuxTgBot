@@ -49,7 +49,8 @@ openrouter:
   api_key: ${OPENROUTER_API_KEY}
   model: openrouter/free
   base_url: https://openrouter.ai/api/v1
-  max_tool_rounds: 25
+  # 0 = без ограничения числа шагов инструментов
+  max_tool_rounds: 0
   # site_url: https://example.com
   # app_name: cursor-linux-tg-bot
 

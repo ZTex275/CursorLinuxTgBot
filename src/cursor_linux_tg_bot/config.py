@@ -85,7 +85,7 @@ class OpenRouterConfig:
     model: str
     mode: str = "agent"
     base_url: str = "https://openrouter.ai/api/v1"
-    max_tool_rounds: int = 25
+    max_tool_rounds: int = 0  # 0 = без ограничения
     site_url: str = ""
     app_name: str = "cursor-linux-tg-bot"
 
@@ -271,7 +271,7 @@ def _build_openrouter_config(openrouter: dict, mode: str) -> OpenRouterConfig | 
         model=openrouter.get("model", "anthropic/claude-sonnet-4"),
         mode=mode,
         base_url=str(openrouter.get("base_url", "https://openrouter.ai/api/v1")).strip(),
-        max_tool_rounds=int(openrouter.get("max_tool_rounds", 25)),
+        max_tool_rounds=int(openrouter.get("max_tool_rounds", 0) or 0),
         site_url=str(openrouter.get("site_url", "")).strip(),
         app_name=str(openrouter.get("app_name", "cursor-linux-tg-bot")).strip(),
     )

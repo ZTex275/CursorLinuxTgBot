@@ -414,8 +414,11 @@ class OpenRouterSessionManager:
         buffer = ""
         self._active_chats.add(chat_id)
         self._cancelled.discard(chat_id)
+        max_rounds = self._config.max_tool_rounds
+        round_index = 0
         try:
-            for _ in range(self._config.max_tool_rounds):
+            while max_rounds <= 0 or round_index < max_rounds:
+                round_index += 1
                 if self._is_cancelled(chat_id):
                     yield RunUpdate(text=buffer.strip() or "Остановлено.", done=True, cancelled=True)
                     return
@@ -480,7 +483,7 @@ class OpenRouterSessionManager:
             yield RunUpdate(
                 text=buffer,
                 done=True,
-                error=f"Превышен лимит шагов инструментов ({self._config.max_tool_rounds}).",
+                error=f"Превышен лимит шагов инструментов ({max_rounds}).",
             )
             session.messages = messages
             self._sessions.save(chat_id, session)
