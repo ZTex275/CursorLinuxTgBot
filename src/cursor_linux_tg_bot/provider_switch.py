@@ -46,6 +46,8 @@ async def switch_provider(
         config.openrouter.mode = config.mode
     if config.openrouter_cli is not None:
         config.openrouter_cli.mode = config.mode
+    if config.opencode_cli is not None:
+        config.opencode_cli.mode = config.mode
 
     new_sessions = create_session_manager(config)
     await new_sessions.start()

@@ -1,11 +1,11 @@
 # Cursor Linux Telegram Bot
 
-Управляйте **Linux-сервером** или **Windows-ПК** из **Telegram** или **ВКонтакте**: сообщения уходят в локального агента (**Cursor Agent CLI**, **OpenRouter API** или **OpenRouter CLI**), ответы возвращаются в чат.
+Управляйте **Linux-сервером** или **Windows-ПК** из **Telegram** или **ВКонтакте**: сообщения уходят в локального агента (**Cursor Agent CLI**, **OpenRouter API**, **OpenRouter CLI** или **OpenCode CLI**), ответы возвращаются в чат.
 
 Поддерживаются **Linux** (systemd) и **Windows** (служба Windows). Установка — один скрипт под вашу ОС.
 
 ```
-Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter API | OpenRouter CLI (orc)
+Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter API | OpenRouter CLI (orc) | OpenCode CLI
 ```
 
 ## Возможности
@@ -14,7 +14,7 @@ Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter API | Open
 - Потоковые ответы (статус выполнения обновляется по ходу работы)
 - **Telegram** и **VK** — можно включить оба или один
 - **Голосовые сообщения** — распознавание речи (Whisper) и выполнение задачи
-- Провайдер агента: **Cursor** (локальный CLI), **OpenRouter** (API + shell/tools) или **OpenRouter CLI** ([orc](https://github.com/Ikarza/openrouter-cli))
+- Провайдер агента: **Cursor** (локальный CLI), **OpenRouter** (API + shell/tools), **OpenRouter CLI** ([orc](https://github.com/Ikarza/openrouter-cli)) или **OpenCode CLI** ([opencode](https://opencode.ai/docs/cli))
 - Whitelist пользователей
 - Режимы `agent` (выполняет команды) и `plan` (только план)
 - **Git**: авто-коммит после ответа, `/commit`, `/undo`, `/git`, `/push`, `/pull`
@@ -32,6 +32,8 @@ Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter API | Open
 | [Cursor Agent CLI](https://cursor.com/docs/cli/overview) | Linux: скриптом; Windows: вручную | `agent.provider: cursor` |
 | [OpenRouter API key](https://openrouter.ai/keys) | `sk-or-...` | `agent.provider: openrouter` или `openrouter_cli` |
 | [OpenRouter CLI (orc)](https://github.com/Ikarza/openrouter-cli) | `npm install -g openrouter-cli` | `agent.provider: openrouter_cli` |
+| [OpenCode CLI](https://opencode.ai/docs/cli) | `npm install -g @opencode/cli` или `curl -fsSL https://opencode.ai/v2/install \| bash` | `agent.provider: opencode_cli` |
+| Аккаунт OpenCode | `opencode auth login` | `agent.provider: opencode_cli` |
 | Telegram-бот | [@BotFather](https://t.me/BotFather) | Telegram |
 | Ваш Telegram user id | [@userinfobot](https://t.me/userinfobot) | Telegram |
 | Токен сообщества VK | Управление → Работа с API | VK (опционально) |
@@ -83,7 +85,9 @@ sudo ./install.sh --allow-root
 ## Быстрая установка (Windows)
 
 1. Установите [Python 3.11+](https://www.python.org/downloads/) (галочка «Add Python to PATH»).
-2. Установите [Cursor Agent CLI](https://cursor.com/docs/cli/overview) и выполните `agent login`.
+2. Установите CLI нужного провайдера:
+   - [Cursor Agent CLI](https://cursor.com/docs/cli/overview) и выполните `agent login` (для `provider: cursor`);
+   - [OpenCode CLI](https://opencode.ai/docs/cli) и выполните `opencode auth login` (для `provider: opencode_cli`).
 3. Клонируйте репозиторий и откройте **PowerShell от администратора** в каталоге проекта:
 
 ```powershell
@@ -163,7 +167,7 @@ sudo ./uninstall.sh
 | `/new` | Новая сессия (сброс контекста и git-чекпоинта) |
 | `/mode agent` | Агент выполняет команды и меняет файлы |
 | `/mode plan` | Только планирование, без изменений |
-| `/provider cursor\|openrouter\|openrouter_cli` | Сменить провайдера агента |
+| `/provider cursor\|openrouter\|openrouter_cli\|opencode_cli` | Сменить провайдера агента |
 | `/model <модель>` | Сменить модель |
 | `/status` | provider, workspace, model, mode, git |
 | `/git` | Статус репозитория |
@@ -214,7 +218,7 @@ vk:
   allowed_user_ids: []   # пусто = разрешить всем
 
 agent:
-  provider: cursor       # cursor | openrouter | openrouter_cli
+  provider: cursor       # cursor | openrouter | openrouter_cli | opencode_cli
   workspace: /home/myuser   # на Windows: C:\Users\you
   mode: agent            # agent | plan
 
@@ -233,6 +237,16 @@ openrouter_cli:
   api_key: ${OPENROUTER_API_KEY}
   profile: default
   binary: orc
+
+opencode_cli:
+  binary: opencode
+  model: ""              # пусто = модель из конфига OpenCode
+  agent: ""              # агент для mode: agent (пусто = агент по умолчанию)
+  plan_agent: plan
+  auto_approve: true
+  standalone: true
+  archived: false
+  timeout_sec: 1800
 
 bot:
   system_prefix: |
@@ -301,6 +315,35 @@ openrouter_cli:
 
 Нужны Node.js 22+ и `npm install -g openrouter-cli`. Это чат через внешний CLI — **без shell/tools** на машине (в отличие от `openrouter`).
 
+### OpenCode CLI вместо Cursor
+
+```yaml
+agent:
+  provider: opencode_cli
+  workspace: /home/myuser
+  mode: agent
+
+opencode_cli:
+  binary: opencode
+  # model: anthropic/claude-sonnet-4-5
+  # agent: build
+  plan_agent: plan
+  auto_approve: true
+  standalone: true
+```
+
+Установка и авторизация:
+
+```bash
+curl -fsSL https://opencode.ai/v2/install | bash
+# или: npm install -g @opencode/cli
+opencode auth login
+```
+
+OpenCode CLI работает как полноценный агент: выполняет команды и меняет файлы в `workspace`. `auto_approve: true` добавляет `--auto`, чтобы бот не зависал на запросах разрешений в неинтерактивном режиме. `standalone: true` запускает отдельный экземпляр сервера OpenCode, не затрагивая вашу интерактивную сессию. API key в конфиге бота не нужен — авторизация хранится в OpenCode.
+
+Бот запускает `opencode run` на каждое сообщение и передаёт историю диалога в промпте; сессии OpenCode между сообщениями не переиспользуются. `/new` очищает историю, `/stop` прерывает процесс.
+
 ### Сравнение провайдеров
 
 | Провайдер | Как работает | Shell / файлы |
@@ -308,6 +351,7 @@ openrouter_cli:
 | `cursor` | Cursor Agent CLI + SDK | да |
 | `openrouter` | OpenRouter API + локальные tools | да |
 | `openrouter_cli` | subprocess `orc ask` | нет (только чат) |
+| `opencode_cli` | subprocess `opencode run` | да |
 
 Активен **один** провайдер — задаётся в `agent.provider`.
 
@@ -394,6 +438,8 @@ python run.py -c config.yaml
 | Сервис не стартует (Linux) | `sudo journalctl -u cursor-linux-tg-bot -n 50 --no-pager` |
 | Служба не стартует (Windows) | Event Viewer → Application; проверьте `run-bot.cmd`, `.env`, `config.yaml` |
 | «Cursor не запустился» | `CURSOR_API_KEY` в `.env` |
+| «OpenCode CLI не найден» | `opencode --version`; установите `npm install -g @opencode/cli` |
+| OpenCode не отвечает / просит вход | `opencode auth login` от имени пользователя сервиса |
 | | Linux: `sudo -u USER agent login` или `agent --version` |
 | | Windows: `agent login` и `agent --version` в cmd |
 | Бот не отвечает | Ваш id в `allowed_user_ids` |

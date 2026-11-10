@@ -70,6 +70,16 @@ if (-not (Test-Path (Join-Path $RepoDir "config.yaml"))) {
     $example | Set-Content -Encoding UTF8 (Join-Path $RepoDir "config.yaml")
 }
 
+if (-not (Get-Command opencode -ErrorAction SilentlyContinue)) {
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        Write-Host "==> OpenCode CLI не найден. Устанавливаю..."
+        & npm install -g "@opencode/cli"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Не удалось установить OpenCode CLI. Нужен для agent.provider: opencode_cli"
+        }
+    }
+}
+
 $wrapper = Join-Path $RepoDir "run-bot.cmd"
 @"
 @echo off

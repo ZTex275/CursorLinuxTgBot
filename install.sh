@@ -137,6 +137,20 @@ if ! command -v orc >/dev/null && [[ ! -x "${SERVICE_HOME}/.npm-global/bin/orc" 
   fi
 fi
 
+# --- OpenCode CLI — опционально, если provider: opencode_cli ---
+if ! command -v opencode >/dev/null && [[ ! -x "${SERVICE_HOME}/.opencode/bin/opencode" ]]; then
+  if command -v curl >/dev/null; then
+    echo "==> OpenCode CLI не найден. Устанавливаю..."
+    sudo -u "$SERVICE_USER" bash -c "curl -fsSL https://opencode.ai/v2/install | bash" || {
+      echo "Не удалось установить OpenCode CLI. Нужен для agent.provider: opencode_cli" >&2
+    }
+  elif command -v npm >/dev/null; then
+    sudo -u "$SERVICE_USER" bash -c "npm install -g @opencode/cli" || {
+      echo "Не удалось установить OpenCode CLI. Нужен для agent.provider: opencode_cli" >&2
+    }
+  fi
+fi
+
 # --- venv в репозитории ---
 if [[ ! -d "${REPO_DIR}/.venv" ]]; then
   "$PYTHON" -m venv "${REPO_DIR}/.venv"
@@ -189,7 +203,7 @@ if [[ ! -f "${REPO_DIR}/config.yaml" ]]; then
 fi
 
 # --- systemd (запуск из репозитория) ---
-AGENT_BIN="${SERVICE_HOME}/.local/bin:${SERVICE_HOME}/.npm-global/bin"
+AGENT_BIN="${SERVICE_HOME}/.local/bin:${SERVICE_HOME}/.npm-global/bin:${SERVICE_HOME}/.opencode/bin"
 cat >/etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=Telegram/VK bridge to Cursor local agent (Linux)

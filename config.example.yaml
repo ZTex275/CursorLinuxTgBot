@@ -24,7 +24,8 @@ vk:
 
 agent:
   # cursor — Cursor Agent CLI; openrouter — OpenRouter API + локальные tools;
-  # openrouter_cli — внешний CLI orc (https://github.com/Ikarza/openrouter-cli)
+  # openrouter_cli — внешний CLI orc (https://github.com/Ikarza/openrouter-cli);
+  # opencode_cli — OpenCode CLI (https://opencode.ai/docs/cli)
   provider: cursor
   # Общий workspace (если не задан — берётся из cursor.workspace)
   # workspace: /home/YOUR_USER
@@ -60,11 +61,23 @@ openrouter_cli:
   binary: orc
   # extra_args: []
 
+# OpenCode CLI подключается через `opencode auth login` — API key здесь не нужен.
+opencode_cli:
+  binary: opencode
+  # model: anthropic/claude-sonnet-4-5   # пусто = модель из конфига OpenCode
+  # agent: build                         # агент для mode: agent
+  plan_agent: plan                       # агент для mode: plan
+  auto_approve: true                     # --auto: разрешать запросы прав без подтверждения
+  standalone: true                       # отдельный сервер OpenCode, не трогает ваш интерактивный
+  archived: false                        # true = не показывать сессии в списке OpenCode
+  timeout_sec: 1800                      # таймаут без вывода
+  # extra_args: []
+
 bot:
   welcome_message: |
     Привет! Я прокси к локальному Cursor Agent на этой машине.
     Просто напишите задачу — агент выполнит её здесь.
-    /new — новая сессия, /mode agent|plan, /provider cursor|openrouter|openrouter_cli, /model <модель>, /status — настройки.
+    /new — новая сессия, /mode agent|plan, /provider cursor|openrouter|openrouter_cli|opencode_cli, /model <модель>, /status — настройки.
     /commit — зафиксировать изменения в git, /undo — откатить последнее сообщение.
     /stop — прервать текущую задачу, откатить её изменения и очистить очередь.
     /git — статус репозитория, /push и /pull — синхронизация с GitHub.

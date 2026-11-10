@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cursor Linux Telegram Bot</title>
-  <meta name="description" content="Управление Linux-сервером или Windows-ПК из Telegram и ВКонтакте через Cursor Agent, OpenRouter или orc.">
+  <meta name="description" content="Управление Linux-сервером или Windows-ПК из Telegram и ВКонтакте через Cursor Agent, OpenRouter, orc или OpenCode CLI.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -26,7 +26,7 @@
   <main class="wrap">
     <section>
       <h2>Схема работы</h2>
-      <pre class="diagram">Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter | orc</pre>
+      <pre class="diagram">Telegram / VK  →  cursor-linux-tg-bot  →  Cursor CLI | OpenRouter | orc | OpenCode CLI</pre>
     </section>
 
     <section>
@@ -36,7 +36,7 @@
         <li>Потоковые ответы и статус выполнения</li>
         <li>Telegram и VK — можно включить оба или один</li>
         <li>Голосовые сообщения через Whisper</li>
-        <li>Провайдеры: Cursor CLI, OpenRouter API, OpenRouter CLI (orc)</li>
+        <li>Провайдеры: Cursor CLI, OpenRouter API, OpenRouter CLI (orc), OpenCode CLI</li>
         <li>Git: авто-коммит, /push, /pull, /undo</li>
         <li>Очередь сообщений с сохранением на диск</li>
         <li>Автозапуск и автоперезапуск службы</li>
@@ -56,7 +56,7 @@ sudo ./install.sh</code></pre>
       <pre><code>git clone https://github.com/ZTex275/CursorLinuxTgBot.git
 cd CursorLinuxTgBot
 .\install.ps1</code></pre>
-      <p>Нужны Python 3.11+, Cursor Agent CLI и PowerShell от администратора.</p>
+      <p>Нужны Python 3.11+, PowerShell от администратора и CLI выбранного провайдера (Cursor Agent, orc или OpenCode).</p>
     </section>
 
     <section>

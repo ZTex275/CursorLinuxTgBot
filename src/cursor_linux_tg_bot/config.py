@@ -12,11 +12,12 @@ from .platform import default_system_prefix
 
 _ENV_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
-PROVIDERS = ("cursor", "openrouter", "openrouter_cli")
+PROVIDERS = ("cursor", "openrouter", "openrouter_cli", "opencode_cli")
 PROVIDER_LABELS = {
     "cursor": "Cursor",
     "openrouter": "OpenRouter",
     "openrouter_cli": "OpenRouter CLI",
+    "opencode_cli": "OpenCode CLI",
 }
 
 
@@ -101,6 +102,20 @@ class OpenRouterCliConfig:
 
 
 @dataclass
+class OpenCodeCliConfig:
+    model: str = ""
+    agent: str = ""
+    plan_agent: str = "plan"
+    binary: str = "opencode"
+    mode: str = "agent"
+    auto_approve: bool = True
+    archived: bool = False
+    standalone: bool = True
+    timeout_sec: float = 1800.0
+    extra_args: list[str] = field(default_factory=list)
+
+
+@dataclass
 class VoiceConfig:
     enabled: bool = True
     model: str = "base"
@@ -153,6 +168,7 @@ class AppConfig:
     cursor: CursorConfig | None
     openrouter: OpenRouterConfig | None
     openrouter_cli: OpenRouterCliConfig | None
+    opencode_cli: OpenCodeCliConfig | None
     bot: BotConfig
     git: GitConfig
     service: ServiceConfig
@@ -166,6 +182,9 @@ class AppConfig:
         if self.provider == "openrouter_cli":
             assert self.openrouter_cli is not None
             return self.openrouter_cli.model or f"profile:{self.openrouter_cli.profile}"
+        if self.provider == "opencode_cli":
+            assert self.opencode_cli is not None
+            return self.opencode_cli.model or "по умолчанию (opencode)"
         assert self.cursor is not None
         return self.cursor.model
 
@@ -181,11 +200,13 @@ class AppConfig:
             providers.append("openrouter")
         if self.openrouter_cli is not None:
             providers.append("openrouter_cli")
+        if self.opencode_cli is not None:
+            providers.append("opencode_cli")
         return providers
 
 
 def provider_help_text() -> str:
-    return "Использование: /provider cursor | openrouter | openrouter_cli"
+    return "Использование: /provider cursor | openrouter | openrouter_cli | opencode_cli"
 
 
 def provider_status_text(config: AppConfig) -> str:
@@ -222,6 +243,12 @@ def apply_model(config: AppConfig, model: str) -> str | None:
         config.openrouter.model = value
         return None
 
+    if config.provider == "opencode_cli":
+        if config.opencode_cli is None:
+            return "Провайдер OpenCode CLI не настроен."
+        config.opencode_cli.model = value
+        return None
+
     if config.openrouter_cli is None:
         return "Провайдер OpenRouter CLI не настроен."
     config.openrouter_cli.model = value
@@ -241,6 +268,11 @@ def validate_provider_choice(config: AppConfig, provider: str) -> str | None:
         return (
             "Провайдер OpenRouter CLI не настроен: задайте openrouter_cli.api_key "
             "(${OPENROUTER_API_KEY}) в config.yaml."
+        )
+    if normalized == "opencode_cli" and config.opencode_cli is None:
+        return (
+            "Провайдер OpenCode CLI не настроен: добавьте секцию opencode_cli "
+            "в config.yaml."
         )
     return None
 
@@ -291,6 +323,21 @@ def _build_openrouter_cli_config(openrouter_cli: dict, mode: str) -> OpenRouterC
     )
 
 
+def _build_opencode_cli_config(opencode_cli: dict, mode: str) -> OpenCodeCliConfig:
+    return OpenCodeCliConfig(
+        model=str(opencode_cli.get("model", "") or "").strip(),
+        agent=str(opencode_cli.get("agent", "") or "").strip(),
+        plan_agent=str(opencode_cli.get("plan_agent", "plan")).strip() or "plan",
+        binary=str(opencode_cli.get("binary", "opencode")).strip() or "opencode",
+        mode=mode,
+        auto_approve=bool(opencode_cli.get("auto_approve", True)),
+        archived=bool(opencode_cli.get("archived", False)),
+        standalone=bool(opencode_cli.get("standalone", True)),
+        timeout_sec=float(opencode_cli.get("timeout_sec", 1800.0)),
+        extra_args=[str(arg) for arg in opencode_cli.get("extra_args", [])],
+    )
+
+
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path).expanduser().resolve()
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -302,6 +349,7 @@ def load_config(path: str | Path) -> AppConfig:
     cursor = data.get("cursor", {}) or {}
     openrouter = data.get("openrouter", {}) or {}
     openrouter_cli = data.get("openrouter_cli", {}) or {}
+    opencode_cli = data.get("opencode_cli", {}) or {}
     bot = data.get("bot", {})
     git = data.get("git", {})
     service = data.get("service", {}) or {}
@@ -317,8 +365,10 @@ def load_config(path: str | Path) -> AppConfig:
         )
 
     provider = str(agent.get("provider", "cursor")).strip().lower()
-    if provider not in {"cursor", "openrouter", "openrouter_cli"}:
-        raise ValueError('agent.provider must be "cursor", "openrouter" or "openrouter_cli"')
+    if provider not in PROVIDERS:
+        raise ValueError(
+            'agent.provider must be "cursor", "openrouter", "openrouter_cli" or "opencode_cli"'
+        )
 
     workspace = str(agent.get("workspace") or cursor.get("workspace", "")).strip()
     if not workspace:
@@ -335,7 +385,9 @@ def load_config(path: str | Path) -> AppConfig:
         agent.get("mode")
         or cursor.get("mode")
         or openrouter.get("mode")
-        or openrouter_cli.get("mode", "agent")
+        or openrouter_cli.get("mode")
+        or opencode_cli.get("mode")
+        or "agent"
     )
     if mode not in {"agent", "plan"}:
         raise ValueError('mode must be "agent" or "plan"')
@@ -343,20 +395,28 @@ def load_config(path: str | Path) -> AppConfig:
     cursor_cfg = _build_cursor_config(cursor, workspace_path, mode)
     openrouter_cfg = _build_openrouter_config(openrouter, mode)
     openrouter_cli_cfg = _build_openrouter_cli_config(openrouter_cli, mode)
+    opencode_cli_cfg = (
+        _build_opencode_cli_config(opencode_cli, mode)
+        if (opencode_cli or provider == "opencode_cli")
+        else None
+    )
 
     missing = {
         "cursor": cursor_cfg is None,
         "openrouter": openrouter_cfg is None,
         "openrouter_cli": openrouter_cli_cfg is None,
+        "opencode_cli": opencode_cli_cfg is None,
     }
     if missing[provider]:
         if provider == "cursor":
             raise ValueError("cursor.api_key is required (use ${CURSOR_API_KEY} in config.yaml)")
         if provider == "openrouter":
             raise ValueError("openrouter.api_key is required (use ${OPENROUTER_API_KEY} in config.yaml)")
-        raise ValueError(
-            "openrouter_cli.api_key is required (use ${OPENROUTER_API_KEY} in config.yaml)"
-        )
+        if provider == "openrouter_cli":
+            raise ValueError(
+                "openrouter_cli.api_key is required (use ${OPENROUTER_API_KEY} in config.yaml)"
+            )
+        raise ValueError("opencode_cli section is required for provider opencode_cli")
 
     sessions_dir = Path(data.get("sessions_dir", config_path.parent / "data" / "sessions")).expanduser()
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -364,6 +424,7 @@ def load_config(path: str | Path) -> AppConfig:
     default_welcome = {
         "openrouter": "Отправьте сообщение — оно уйдёт в локальный OpenRouter-агент на этом сервере.",
         "openrouter_cli": "Отправьте сообщение — оно уйдёт в OpenRouter CLI (orc) на этом сервере.",
+        "opencode_cli": "Отправьте сообщение — оно уйдёт в OpenCode CLI на этом сервере.",
     }.get(provider, "Отправьте сообщение — оно уйдёт в локальный Cursor Agent на этом сервере.")
 
     return AppConfig(
@@ -389,6 +450,7 @@ def load_config(path: str | Path) -> AppConfig:
         cursor=cursor_cfg,
         openrouter=openrouter_cfg,
         openrouter_cli=openrouter_cli_cfg,
+        opencode_cli=opencode_cli_cfg,
         bot=BotConfig(
             welcome_message=bot.get("welcome_message", default_welcome),
             system_prefix=bot.get(
