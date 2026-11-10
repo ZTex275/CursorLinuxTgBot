@@ -4,6 +4,7 @@ from .agent_base import AgentSessionManager
 from .agent_factory import create_session_manager
 from .config import AppConfig, provider_help_text, provider_status_text, validate_provider_choice
 from .message_queue import MessageQueue
+from .runtime_settings import RuntimeSettings
 
 
 def any_active_tasks(sessions: AgentSessionManager) -> bool:
@@ -23,6 +24,7 @@ async def switch_provider(
     new_provider: str | None,
     *,
     queues: tuple[MessageQueue, ...] = (),
+    runtime: RuntimeSettings | None = None,
 ) -> tuple[AgentSessionManager | None, str]:
     if not new_provider:
         return None, provider_status_text(config)
@@ -32,6 +34,8 @@ async def switch_provider(
         return None, error
 
     if config.provider == new_provider:
+        if runtime is not None:
+            runtime.save_provider(config.provider)
         return sessions, f"Провайдер уже {config.provider_label}."
 
     if any_active_tasks(sessions) or any_pending_queues(*queues):
@@ -51,4 +55,6 @@ async def switch_provider(
 
     new_sessions = create_session_manager(config)
     await new_sessions.start()
+    if runtime is not None:
+        runtime.save_provider(config.provider)
     return new_sessions, f"Провайдер: {config.provider_label}\nmodel: {config.model}"

@@ -23,6 +23,7 @@ from .model_switch import switch_model
 from .network import enable_ipv4_only, telegram_transport
 from .provider_switch import switch_provider
 from .platform import check_supported_platform
+from .runtime_settings import RuntimeSettings
 from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
 from .textutil import extract_command_payload, format_queue_error, split_message, working_status
@@ -41,11 +42,13 @@ class TelegramCursorBot:
         git: GitManager | None = None,
         vk_bot: VkCursorBot | None = None,
         queue_store: QueueStore | None = None,
+        runtime: RuntimeSettings | None = None,
     ) -> None:
         self._config = config
         self._sessions = sessions or create_session_manager(config)
         self._git = git or GitManager.from_config(config.workspace, config.git)
         self._vk_bot = vk_bot
+        self._runtime = runtime
         self._reloader = BotReloader(config.workspace, config.service)
         self._vk_task: asyncio.Task[None] | None = None
         self._tg_app: Application | None = None
@@ -129,6 +132,8 @@ class TelegramCursorBot:
             self._config.openrouter_cli.mode = context.args[0]
         if self._config.opencode_cli is not None:
             self._config.opencode_cli.mode = context.args[0]
+        if self._runtime is not None:
+            self._runtime.save_mode(context.args[0])
         await update.message.reply_text(f"Режим по умолчанию: {context.args[0]}")
 
     async def cmd_provider(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -148,6 +153,7 @@ class TelegramCursorBot:
             self._sessions,
             new_provider,
             queues=queues,
+            runtime=self._runtime,
         )
         if new_sessions is not None:
             self._sessions = new_sessions
@@ -172,6 +178,7 @@ class TelegramCursorBot:
             self._sessions,
             new_model,
             queues=queues,
+            runtime=self._runtime,
         )
         await update.message.reply_text(message)
 
@@ -699,6 +706,8 @@ def main() -> None:
 
     config_path = Path(args.config).expanduser().resolve()
     config = load_config(config_path)
+    runtime = RuntimeSettings(config.sessions_dir.parent / "runtime.json")
+    runtime.apply(config)
     if config.telegram.force_ipv4:
         enable_ipv4_only()
         logger.info("IPv4-only mode enabled for Telegram API")
@@ -707,7 +716,9 @@ def main() -> None:
     git = GitManager.from_config(config.workspace, config.git)
     queue_store = QueueStore(config.sessions_dir.parent / "queue")
     vk_bot = (
-        VkCursorBot(config, sessions, git, queue_store=queue_store) if config.vk.enabled else None
+        VkCursorBot(config, sessions, git, queue_store=queue_store, runtime=runtime)
+        if config.vk.enabled
+        else None
     )
 
     if config.telegram.enabled:
@@ -717,6 +728,7 @@ def main() -> None:
             git=git,
             vk_bot=vk_bot,
             queue_store=queue_store,
+            runtime=runtime,
         )
         if vk_bot is not None:
             vk_bot._sessions_sync = lambda manager: setattr(bot, "_sessions", manager)
