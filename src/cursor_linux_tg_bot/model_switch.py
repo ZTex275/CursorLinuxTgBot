@@ -4,6 +4,7 @@ from .agent_base import AgentSessionManager
 from .config import AppConfig, apply_model, model_status_text
 from .message_queue import MessageQueue
 from .provider_switch import any_active_tasks, any_pending_queues
+from .runtime_settings import RuntimeSettings
 
 
 async def switch_model(
@@ -12,6 +13,7 @@ async def switch_model(
     new_model: str | None,
     *,
     queues: tuple[MessageQueue, ...] = (),
+    runtime: RuntimeSettings | None = None,
 ) -> str:
     if not new_model:
         return model_status_text(config)
@@ -26,5 +28,8 @@ async def switch_model(
     invalidate = getattr(sessions, "invalidate_for_model_change", None)
     if invalidate is not None:
         await invalidate()
+
+    if runtime is not None:
+        runtime.save_model(config.provider, config.model)
 
     return f"Модель ({config.provider_label}): {config.model}"

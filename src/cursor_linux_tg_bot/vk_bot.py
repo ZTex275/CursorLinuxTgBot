@@ -23,6 +23,7 @@ from .message_queue import ChatKey, MessageQueue
 from .queue_store import QueueStore
 from .model_switch import switch_model
 from .provider_switch import switch_provider
+from .runtime_settings import RuntimeSettings
 from .service_reload import BotReloader, augment_prompt
 from .stream_ui import deliver_streamed_reply
 from .textutil import extract_command_payload, format_queue_error, split_message, working_status
@@ -56,11 +57,13 @@ class VkCursorBot:
         sessions,
         git: GitManager,
         queue_store: QueueStore | None = None,
+        runtime: RuntimeSettings | None = None,
     ) -> None:
         self._config = config
         self._vk = config.vk
         self._sessions = sessions
         self._git = git
+        self._runtime = runtime
         self._reloader = BotReloader(config.workspace, config.service)
         self._sessions_sync = None
         self._extra_queues: tuple[MessageQueue, ...] = ()
@@ -170,6 +173,8 @@ class VkCursorBot:
                     self._config.openrouter_cli.mode = args[0]
                 if self._config.opencode_cli is not None:
                     self._config.opencode_cli.mode = args[0]
+                if self._runtime is not None:
+                    self._runtime.save_mode(args[0])
                 await self._send(peer_id, f"Режим по умолчанию: {args[0]}")
         elif command == "/provider":
             new_provider = args[0].strip().lower() if args else None
@@ -178,6 +183,7 @@ class VkCursorBot:
                 self._sessions,
                 new_provider,
                 queues=(self._queue, *self._extra_queues),
+                runtime=self._runtime,
             )
             if new_sessions is not None:
                 self._sessions = new_sessions
@@ -191,6 +197,7 @@ class VkCursorBot:
                 self._sessions,
                 new_model,
                 queues=(self._queue, *self._extra_queues),
+                runtime=self._runtime,
             )
             await self._send(peer_id, message)
         elif command == "/status":
