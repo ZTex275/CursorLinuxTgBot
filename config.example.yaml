@@ -77,7 +77,7 @@ bot:
   welcome_message: |
     Привет! Я прокси к локальному Cursor Agent на этой машине.
     Просто напишите задачу — агент выполнит её здесь.
-    /new — новая сессия, /mode agent|plan, /provider cursor|openrouter|openrouter_cli|opencode_cli, /model <модель>, /status — настройки.
+    /new — новая сессия, /mode agent|plan, /provider cursor|openrouter|openrouter_cli|opencode_cli, /model <модель>, /models [фильтр] — список моделей, /status — настройки.
     /commit — зафиксировать изменения в git, /undo — откатить последнее сообщение.
     /stop — прервать текущую задачу, откатить её изменения и очистить очередь.
     /git — статус репозитория, /push и /pull — синхронизация с GitHub.
