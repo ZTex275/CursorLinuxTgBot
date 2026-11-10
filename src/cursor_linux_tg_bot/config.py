@@ -219,7 +219,7 @@ def provider_status_text(config: AppConfig) -> str:
 
 
 def model_help_text() -> str:
-    return "Использование: /model <имя модели>"
+    return "Использование: /model <имя модели>; /models [фильтр] — список доступных моделей"
 
 
 def model_status_text(config: AppConfig) -> str:

@@ -19,6 +19,7 @@ from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
 from .queue_store import QueueStore
+from .model_catalog import list_models
 from .model_switch import switch_model
 from .network import enable_ipv4_only, telegram_transport
 from .provider_switch import switch_provider
@@ -181,6 +182,21 @@ class TelegramCursorBot:
             runtime=self._runtime,
         )
         await update.message.reply_text(message)
+
+    async def cmd_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message:
+            return
+
+        query = " ".join(context.args).strip() or None
+        try:
+            await update.message.chat.send_action(ChatAction.TYPING)
+        except Exception:
+            pass
+        text = await list_models(self._config, query)
+        await self._send_chunks(update, text)
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
@@ -673,6 +689,7 @@ class TelegramCursorBot:
         app.add_handler(CommandHandler("mode", self.cmd_mode))
         app.add_handler(CommandHandler("provider", self.cmd_provider))
         app.add_handler(CommandHandler("model", self.cmd_model))
+        app.add_handler(CommandHandler("models", self.cmd_models))
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("commit", self.cmd_commit))
         app.add_handler(CommandHandler("undo", self.cmd_undo))

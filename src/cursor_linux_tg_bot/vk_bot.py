@@ -21,6 +21,7 @@ from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
 from .queue_store import QueueStore
+from .model_catalog import list_models
 from .model_switch import switch_model
 from .provider_switch import switch_provider
 from .runtime_settings import RuntimeSettings
@@ -200,6 +201,9 @@ class VkCursorBot:
                 runtime=self._runtime,
             )
             await self._send(peer_id, message)
+        elif command == "/models":
+            query = " ".join(args).strip() or None
+            await self._send(peer_id, await list_models(self._config, query))
         elif command == "/status":
             git_on = self._config.git.enabled and await self._git.is_repo()
             gh = "токен задан" if self._config.git.github_token else "токен не задан"
