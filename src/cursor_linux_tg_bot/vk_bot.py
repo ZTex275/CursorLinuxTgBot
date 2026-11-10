@@ -168,6 +168,8 @@ class VkCursorBot:
                     self._config.openrouter.mode = args[0]
                 if self._config.openrouter_cli is not None:
                     self._config.openrouter_cli.mode = args[0]
+                if self._config.opencode_cli is not None:
+                    self._config.opencode_cli.mode = args[0]
                 await self._send(peer_id, f"Режим по умолчанию: {args[0]}")
         elif command == "/provider":
             new_provider = args[0].strip().lower() if args else None

@@ -95,6 +95,8 @@ def extra_binary_paths(name: str) -> list[Path]:
             [
                 home / ".npm-global" / f"{name}.cmd",
                 home / ".npm-global" / f"{name}.exe",
+                home / ".opencode" / "bin" / f"{name}.exe",
+                home / ".opencode" / "bin" / f"{name}.cmd",
                 Path("C:/Program Files/nodejs") / f"{name}.cmd",
             ]
         )
@@ -103,6 +105,7 @@ def extra_binary_paths(name: str) -> list[Path]:
             [
                 home / ".npm-global" / "bin" / name,
                 home / ".local" / "bin" / name,
+                home / ".opencode" / "bin" / name,
                 Path("/usr/local/bin") / name,
             ]
         )
