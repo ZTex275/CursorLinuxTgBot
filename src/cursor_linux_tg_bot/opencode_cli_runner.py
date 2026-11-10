@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _BOX_LINE_RE = re.compile(r"^[\s│|┃]+(.*?)[\s│|┃]+$")
+# Служебная строка `opencode run`: "> build · ~anthropic/claude-sonnet-latest"
+_STATUS_LINE_RE = re.compile(r"^>\s+\S+\s+·\s+\S+$")
 
 
 def _strip_ansi(text: str) -> str:
@@ -37,6 +39,8 @@ def _clean_opencode_output(raw: str) -> str:
         if line.startswith(("┌", "└", "├", "╭", "╰", "╞", "╡")):
             continue
         if all(ch in "─━═-_│|┃ " for ch in line):
+            continue
+        if _STATUS_LINE_RE.match(line):
             continue
         match = _BOX_LINE_RE.match(line)
         if match:
@@ -82,6 +86,22 @@ class OpenCodeCliSessionManager:
         env = os.environ.copy()
         env["NO_COLOR"] = "1"
         env["TERM"] = "dumb"
+        env.setdefault("CI", "1")
+        if not env.get("HOME"):
+            try:
+                import pwd
+
+                env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
+            except Exception:  # pragma: no cover
+                pass
+        home = env.get("HOME")
+        if home:
+            extra = [str(Path(home) / ".local" / "bin"), str(Path(home) / ".opencode" / "bin")]
+            path = env.get("PATH", "")
+            for item in reversed(extra):
+                if item not in path.split(os.pathsep):
+                    path = f"{item}{os.pathsep}{path}"
+            env["PATH"] = path
         return env
 
     def lock_for(self, chat_id: ChatKey) -> asyncio.Lock:
@@ -162,8 +182,7 @@ class OpenCodeCliSessionManager:
     def _run_command(self, prompt: str, *, mode: str) -> list[str]:
         cmd = [self._binary, "run"]
 
-        if self._config.standalone:
-            cmd.append("--standalone")
+        # Флаг --standalone относится к `opencode serve`, у `opencode run` его нет.
         if self._config.auto_approve:
             cmd.append("--auto")
         if self._config.archived:
