@@ -71,6 +71,7 @@ opencode_cli:
   standalone: true                       # отдельный сервер OpenCode, не трогает ваш интерактивный
   archived: false                        # true = не показывать сессии в списке OpenCode
   timeout_sec: 1800                      # таймаут без вывода
+  json_events: true                      # --format json: прогресс по инструментам во время работы
   # extra_args: []
 
 bot:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import json
 import logging
 import os
 import re
@@ -14,12 +15,16 @@ from .config import OpenCodeCliConfig
 from .git_manager import GitCheckpoint
 from .platform import is_binary_available, is_windows, resolve_binary
 from .session_store import ChatKey, ChatSession, SessionStore
+from .textutil import stage_from_tool_call
 
 logger = logging.getLogger(__name__)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _BOX_LINE_RE = re.compile(r"^[\s│|┃]+(.*?)[\s│|┃]+$")
+
+_READ_CHUNK = 64 * 1024
+_ERROR_TAIL = 8000
 
 
 def _strip_ansi(text: str) -> str:
@@ -46,6 +51,141 @@ def _clean_opencode_output(raw: str) -> str:
             continue
         lines.append(line)
     return "\n".join(lines).strip()
+
+
+def _error_message(event: dict) -> str:
+    message = str(event.get("message") or "").strip()
+    if message:
+        return message
+
+    error = event.get("error")
+    if isinstance(error, dict):
+        data = error.get("data")
+        if isinstance(data, dict):
+            message = str(data.get("message") or "").strip()
+            if message:
+                return message
+        message = str(error.get("message") or "").strip()
+        if message:
+            return message
+        name = str(error.get("name") or "").strip()
+        if name:
+            return name
+    message = str(error or "").strip()
+    return message or "неизвестная ошибка OpenCode"
+
+
+def _tool_error(state: dict) -> str | None:
+    error = state.get("error")
+    if isinstance(error, dict):
+        data = error.get("data")
+        if isinstance(data, dict):
+            message = str(data.get("message") or "").strip()
+            if message:
+                return message
+        message = str(error.get("message") or "").strip()
+        if message:
+            return message
+        name = str(error.get("name") or "").strip()
+        if name:
+            return name
+        return None
+    message = str(error or "").strip()
+    return message or None
+
+
+class _OpenCodeJsonParser:
+    """Разбирает JSONL-события `opencode run --format json`.
+
+    Прогресс отдаётся сразу, а текст ответа копится по шагам: в финал
+    попадает только последний шаг с reason == "stop".
+    """
+
+    def __init__(self) -> None:
+        self._step_texts: list[str] = []
+        self._steps: list[tuple[str, str]] = []
+        self._error: str | None = None
+
+    def feed(self, raw_line: str) -> RunUpdate | None:
+        line = raw_line.strip()
+        if not line:
+            return None
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(event, dict):
+            return None
+
+        event_type = str(event.get("type") or "")
+        part = event.get("part")
+        if not isinstance(part, dict):
+            part = {}
+
+        if event_type == "step_start":
+            return RunUpdate(text="", stage="Думаю над задачей")
+
+        if event_type == "tool_use":
+            return self._tool_update(part)
+
+        if event_type == "text":
+            text = str(part.get("text") or "").strip()
+            if not text:
+                return None
+            self._step_texts.append(text)
+            return RunUpdate(text="", stage="Формирую ответ")
+
+        if event_type == "step_finish":
+            self._commit_step(str(part.get("reason") or ""))
+            return None
+
+        if event_type == "error":
+            self._error = _error_message(event)
+            return None
+
+        return None
+
+    def _tool_update(self, part: dict) -> RunUpdate | None:
+        tool = str(part.get("tool") or "").strip()
+        if not tool:
+            return None
+
+        state = part.get("state")
+        if not isinstance(state, dict):
+            state = {}
+
+        status = str(state.get("status") or "")
+        title = str(state.get("title") or "").strip()
+        stage, detail = stage_from_tool_call(tool, state.get("input"))
+
+        if status == "error":
+            stage = f"{stage} — ошибка"
+            detail = _tool_error(state) or detail or title or None
+        elif not detail:
+            detail = title or None
+
+        return RunUpdate(text="", stage=stage, detail=detail)
+
+    def _commit_step(self, reason: str) -> None:
+        if not self._step_texts:
+            return
+        text = "\n\n".join(self._step_texts).strip()
+        self._step_texts = []
+        if text:
+            self._steps.append((reason, text))
+
+    def final_text(self) -> str:
+        self._commit_step("")
+        if not self._steps:
+            return ""
+        for reason, text in reversed(self._steps):
+            if reason == "stop" and text:
+                return text
+        return self._steps[-1][1]
+
+    @property
+    def error(self) -> str | None:
+        return self._error
 
 
 class OpenCodeCliSessionManager:
@@ -170,6 +310,8 @@ class OpenCodeCliSessionManager:
             cmd.append("--archived")
         if self._config.model:
             cmd.extend(["--model", self._config.model])
+        if self._config.json_events:
+            cmd.extend(["--format", "json"])
 
         agent = self._config.plan_agent if mode == "plan" else self._config.agent
         if agent:
@@ -201,15 +343,20 @@ class OpenCodeCliSessionManager:
         self._active_procs[chat_id] = proc
 
         timeout = max(self._config.timeout_sec, 30.0)
-        raw_buffer = ""
-        last_emit = 0.0
+        parser = _OpenCodeJsonParser() if self._config.json_events else None
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        raw_buffer = ""
+        line_buffer = ""
+        last_emit = 0.0
         assert proc.stdout is not None
 
         try:
             while True:
                 try:
-                    chunk = await asyncio.wait_for(proc.stdout.read(4096), timeout=timeout)
+                    chunk = await asyncio.wait_for(
+                        proc.stdout.read(_READ_CHUNK),
+                        timeout=timeout,
+                    )
                 except asyncio.TimeoutError:
                     proc.kill()
                     await proc.wait()
@@ -221,15 +368,41 @@ class OpenCodeCliSessionManager:
                     return
 
                 if not chunk:
-                    raw_buffer += decoder.decode(b"", final=True)
+                    tail = decoder.decode(b"", final=True)
+                    raw_buffer += tail
+                    if parser is not None:
+                        line_buffer += tail
                     break
 
-                raw_buffer += decoder.decode(chunk)
-                cleaned = _clean_opencode_output(raw_buffer)
-                now = time.monotonic()
-                if cleaned and now - last_emit >= 0.5:
-                    last_emit = now
-                    yield RunUpdate(text=cleaned, done=False, stage="Генерирую ответ")
+                decoded = decoder.decode(chunk)
+                raw_buffer += decoded
+                if parser is not None and len(raw_buffer) > _ERROR_TAIL * 2:
+                    # В JSON-режиме весь вывод не нужен — держим только хвост для ошибок.
+                    raw_buffer = raw_buffer[-_ERROR_TAIL * 2 :]
+
+                if parser is None:
+                    cleaned = _clean_opencode_output(raw_buffer)
+                    now = time.monotonic()
+                    if cleaned and now - last_emit >= 0.5:
+                        last_emit = now
+                        yield RunUpdate(
+                            text=cleaned,
+                            done=False,
+                            stage="Генерирую ответ",
+                        )
+                    continue
+
+                line_buffer += decoded
+                while "\n" in line_buffer:
+                    line, line_buffer = line_buffer.split("\n", 1)
+                    update = parser.feed(line)
+                    if update is not None:
+                        yield update
+
+            if parser is not None and line_buffer.strip():
+                update = parser.feed(line_buffer)
+                if update is not None:
+                    yield update
 
             code = await proc.wait()
         except Exception as err:
@@ -241,6 +414,26 @@ class OpenCodeCliSessionManager:
             was_cancelled = chat_id in self._cancelled
             self._active_procs.pop(chat_id, None)
             self._cancelled.discard(chat_id)
+
+        if parser is not None:
+            final_text = parser.final_text()
+            if was_cancelled:
+                yield RunUpdate(
+                    text=final_text or "Остановлено.",
+                    done=True,
+                    cancelled=True,
+                )
+                return
+            if code != 0:
+                reason = parser.error or _strip_ansi(raw_buffer)[-_ERROR_TAIL:]
+                yield RunUpdate(
+                    text=final_text,
+                    done=True,
+                    error=f"OpenCode CLI завершился с кодом {code}: {reason}",
+                )
+                return
+            yield final_text or "Готово."
+            return
 
         cleaned = _clean_opencode_output(raw_buffer)
         if was_cancelled:
@@ -275,13 +468,14 @@ class OpenCodeCliSessionManager:
         buffer = ""
         final_text = ""
 
-        yield RunUpdate(text="", done=False, stage="Генерирую ответ")
+        yield RunUpdate(text="", done=False, stage="Запускаю OpenCode")
         async for item in self._run_opencode(chat_id, full_prompt, mode=effective_mode):
             if isinstance(item, RunUpdate):
                 if item.error or item.cancelled:
                     yield item
                     return
-                buffer = item.text
+                if item.text and not item.done:
+                    buffer = item.text
                 yield item
             else:
                 final_text = item

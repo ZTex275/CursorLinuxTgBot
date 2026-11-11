@@ -77,6 +77,20 @@ _TOOL_STAGE_LABELS: dict[str, str] = {
     "read_file": "Читаю файл",
     "write_file": "Записываю файл",
     "list_dir": "Просматриваю каталог",
+    "bash": "Выполняю команду в терминале",
+    "read": "Читаю файл",
+    "write": "Записываю файл",
+    "edit": "Редактирую файл",
+    "patch": "Применяю патч",
+    "glob": "Ищу файлы",
+    "grep": "Ищу по содержимому",
+    "list": "Просматриваю каталог",
+    "webfetch": "Загружаю страницу",
+    "websearch": "Ищу в интернете",
+    "task": "Запускаю подзадачу",
+    "todowrite": "Обновляю список задач",
+    "todoread": "Читаю список задач",
+    "invalid": "Проверяю запрос",
 }
 
 _TOOL_NAME_ALIASES: dict[str, str] = {
@@ -113,8 +127,10 @@ def detail_from_tool_args(name: str, args: object = None) -> str | None:
         return None
 
     normalized = _TOOL_NAME_ALIASES.get(name, name)
+    tool = normalized.lower()
+    path = data.get("path") or data.get("filePath") or data.get("file_path")
 
-    if normalized in {"Shell", "shell"}:
+    if tool in {"shell", "bash"}:
         command = data.get("command") or data.get("cmd")
         if command:
             return _truncate_detail(str(command))
@@ -122,53 +138,60 @@ def detail_from_tool_args(name: str, args: object = None) -> str | None:
         if description:
             return _truncate_detail(str(description))
 
-    if normalized in {"Read", "read_file", "Write", "write_file", "StrReplace", "Delete"}:
-        path = data.get("path")
+    if tool in {
+        "read",
+        "read_file",
+        "write",
+        "write_file",
+        "edit",
+        "patch",
+        "delete",
+        "strreplace",
+    }:
         if path:
             return _truncate_detail(str(path))
 
-    if normalized == "Grep":
+    if tool == "grep":
         pattern = data.get("pattern")
-        path = data.get("path") or data.get("glob")
-        if pattern and path:
-            return _truncate_detail(f"{pattern} → {path}")
+        target = data.get("include") or data.get("glob") or path
+        if pattern and target:
+            return _truncate_detail(f"{pattern} → {target}")
         if pattern:
             return _truncate_detail(str(pattern))
-        if path:
-            return _truncate_detail(str(path))
+        if target:
+            return _truncate_detail(str(target))
 
-    if normalized == "Glob":
+    if tool == "glob":
         pattern = data.get("glob_pattern") or data.get("pattern")
-        directory = data.get("target_directory") or data.get("path")
+        directory = data.get("target_directory") or path
         if pattern and directory:
             return _truncate_detail(f"{pattern} в {directory}")
         if pattern:
             return _truncate_detail(str(pattern))
 
-    if normalized == "list_dir":
-        path = data.get("path")
+    if tool in {"list", "list_dir"}:
         if path is not None and str(path).strip():
             return _truncate_detail(str(path))
         return "(корень workspace)"
 
-    if normalized == "Task":
-        for key in ("description", "prompt"):
-            value = data.get(key)
+    if tool == "task":
+        for field in ("description", "prompt"):
+            value = data.get(field)
             if value:
                 return _truncate_detail(str(value))
 
-    if normalized == "WebSearch":
+    if tool == "websearch":
         term = data.get("search_term") or data.get("query")
         if term:
             return _truncate_detail(str(term))
 
-    if normalized == "WebFetch":
+    if tool == "webfetch":
         url = data.get("url")
         if url:
             return _truncate_detail(str(url))
 
     if normalized == "EditNotebook":
-        notebook = data.get("target_notebook") or data.get("path")
+        notebook = data.get("target_notebook") or path
         if notebook:
             return _truncate_detail(str(notebook))
 

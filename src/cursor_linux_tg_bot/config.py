@@ -112,6 +112,7 @@ class OpenCodeCliConfig:
     archived: bool = False
     standalone: bool = True
     timeout_sec: float = 1800.0
+    json_events: bool = True
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -334,6 +335,7 @@ def _build_opencode_cli_config(opencode_cli: dict, mode: str) -> OpenCodeCliConf
         archived=bool(opencode_cli.get("archived", False)),
         standalone=bool(opencode_cli.get("standalone", True)),
         timeout_sec=float(opencode_cli.get("timeout_sec", 1800.0)),
+        json_events=bool(opencode_cli.get("json_events", True)),
         extra_args=[str(arg) for arg in opencode_cli.get("extra_args", [])],
     )
 
