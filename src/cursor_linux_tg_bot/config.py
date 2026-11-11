@@ -130,6 +130,16 @@ class VoiceConfig:
 
 
 @dataclass
+class FilesConfig:
+    enabled: bool = True
+    restrict_to_workspace: bool = False
+    max_upload_mb: float = 50.0
+    max_download_mb: float = 50.0
+    max_view_bytes: int = 200_000
+    max_list_entries: int = 300
+
+
+@dataclass
 class BotConfig:
     welcome_message: str
     system_prefix: str
@@ -137,6 +147,7 @@ class BotConfig:
     stream_edit_interval_sec: float = 5.0
     max_queue_size: int = 100
     voice: VoiceConfig = field(default_factory=VoiceConfig)
+    files: FilesConfig = field(default_factory=FilesConfig)
 
 
 @dataclass
@@ -353,6 +364,7 @@ def load_config(path: str | Path) -> AppConfig:
     openrouter_cli = data.get("openrouter_cli", {}) or {}
     opencode_cli = data.get("opencode_cli", {}) or {}
     bot = data.get("bot", {})
+    bot_files = bot.get("files", {}) or {}
     git = data.get("git", {})
     service = data.get("service", {}) or {}
 
@@ -472,6 +484,14 @@ def load_config(path: str | Path) -> AppConfig:
                 best_of=int(bot.get("voice", {}).get("best_of", 5)),
                 initial_prompt=str(bot.get("voice", {}).get("initial_prompt", "") or ""),
                 show_recognized_text=bool(bot.get("voice", {}).get("show_recognized_text", True)),
+            ),
+            files=FilesConfig(
+                enabled=bool(bot_files.get("enabled", True)),
+                restrict_to_workspace=bool(bot_files.get("restrict_to_workspace", False)),
+                max_upload_mb=float(bot_files.get("max_upload_mb", 50.0)),
+                max_download_mb=float(bot_files.get("max_download_mb", 50.0)),
+                max_view_bytes=int(bot_files.get("max_view_bytes", 200_000)),
+                max_list_entries=int(bot_files.get("max_list_entries", 300)),
             ),
         ),
         git=GitConfig(

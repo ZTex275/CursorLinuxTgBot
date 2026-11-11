@@ -11,12 +11,25 @@ import logging
 import random
 import textwrap
 import time
+from pathlib import Path
 
 import httpx
 
 from .agent_base import RunUpdate
 from .agent_factory import create_session_manager
 from .config import AppConfig, provider_status_text
+from .file_transfer import (
+    FileTransferError,
+    check_upload_size,
+    format_size,
+    list_directory,
+    parse_transfer_command,
+    read_file_preview,
+    resolve_upload_target,
+    sanitize_filename,
+    save_bytes,
+    validate_download,
+)
 from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
@@ -149,10 +162,15 @@ class VkCursorBot:
             return True
         return from_id in allowed
 
-    async def _handle_command(self, peer_id: int, text: str) -> bool:
+    async def _handle_command(
+        self,
+        peer_id: int,
+        text: str,
+        attachments: list[dict] | None = None,
+    ) -> bool:
         """Обработка /команд. Возвращает True, если сообщение было командой."""
         parts = text.split()
-        command = parts[0].lower()
+        command = parts[0].lower().split("@", 1)[0]
         args = parts[1:]
         chat_key = self._chat_key(peer_id)
 
@@ -244,6 +262,14 @@ class VkCursorBot:
             await self._cmd_undo(peer_id)
         elif command == "/stop":
             await self._cmd_stop(peer_id)
+        elif command in {"/ls", "/dir"}:
+            await self._cmd_ls(peer_id, " ".join(args).strip())
+        elif command in {"/cat", "/view"}:
+            await self._cmd_cat(peer_id, text, command, args)
+        elif command in {"/download", "/get", "/dl"}:
+            await self._cmd_download(peer_id, text)
+        elif command in {"/upload", "/put"}:
+            await self._cmd_upload(peer_id, text, attachments or [])
         else:
             return False
         return True
@@ -370,6 +396,209 @@ class VkCursorBot:
     async def _cmd_stop(self, peer_id: int) -> None:
         chat_key = self._chat_key(peer_id)
         await self._send(peer_id, await self._stop_chat(chat_key))
+
+    # --- файлы ---
+
+    def _files_enabled_text(self) -> str | None:
+        if self._config.bot.files.enabled:
+            return None
+        return "Работа с файлами отключена в config.yaml (bot.files.enabled)."
+
+    async def _cmd_ls(self, peer_id: int, raw: str) -> None:
+        disabled = self._files_enabled_text()
+        if disabled:
+            await self._send(peer_id, disabled)
+            return
+        try:
+            text = list_directory(raw, self._config.workspace, self._config.bot.files)
+        except FileTransferError as err:
+            text = f"❌ {err}"
+        await self._send(peer_id, text)
+
+    async def _cmd_cat(
+        self,
+        peer_id: int,
+        text: str,
+        command: str,
+        args: list[str],
+    ) -> None:
+        disabled = self._files_enabled_text()
+        if disabled:
+            await self._send(peer_id, disabled)
+            return
+        raw = extract_command_payload(text, command.lstrip("/")) or " ".join(args).strip()
+        if not raw:
+            await self._send(peer_id, "Использование: /cat <путь к файлу>")
+            return
+        try:
+            preview = read_file_preview(raw, self._config.workspace, self._config.bot.files)
+        except FileTransferError as err:
+            preview = f"❌ {err}"
+        await self._send(peer_id, preview)
+
+    async def _cmd_download(self, peer_id: int, text: str) -> None:
+        disabled = self._files_enabled_text()
+        if disabled:
+            await self._send(peer_id, disabled)
+            return
+        _, raw = parse_transfer_command(text)
+        if not raw:
+            await self._send(peer_id, "Использование: /download <путь к файлу>")
+            return
+        try:
+            path = validate_download(raw, self._config.workspace, self._config.bot.files)
+            size = path.stat().st_size
+            await self._send_document(
+                peer_id,
+                path,
+                f"📄 {path} · {format_size(size)}",
+            )
+        except FileTransferError as err:
+            await self._send(peer_id, f"❌ {err}")
+        except (VkApiError, httpx.HTTPError, OSError) as err:
+            logger.exception("VK file download failed")
+            await self._send(peer_id, f"❌ Не удалось отправить файл: {err}")
+
+    async def _cmd_upload(
+        self,
+        peer_id: int,
+        text: str,
+        attachments: list[dict],
+    ) -> None:
+        disabled = self._files_enabled_text()
+        if disabled:
+            await self._send(peer_id, disabled)
+            return
+
+        attachment = next(
+            (
+                item
+                for item in attachments
+                if isinstance(item, dict) and item.get("type") in {"doc", "photo"}
+            ),
+            None,
+        )
+        if attachment is None:
+            await self._send(
+                peer_id,
+                "Прикрепите документ или фотографию к сообщению с командой:\n"
+                "/upload <каталог на сервере>\n\n"
+                "Например: /upload /var/log",
+            )
+            return
+
+        _, raw = parse_transfer_command(text)
+        try:
+            data, filename, declared_size = await self._download_attachment(attachment)
+            check_upload_size(declared_size or len(data), self._config.bot.files)
+            target = resolve_upload_target(
+                raw,
+                filename,
+                self._config.workspace,
+                restrict_to_workspace=self._config.bot.files.restrict_to_workspace,
+            )
+            await asyncio.to_thread(save_bytes, target, data)
+        except FileTransferError as err:
+            await self._send(peer_id, f"❌ {err}")
+            return
+        except (VkApiError, httpx.HTTPError, OSError) as err:
+            logger.exception("VK file upload failed")
+            await self._send(peer_id, f"❌ Не удалось сохранить файл: {err}")
+            return
+
+        await self._send(
+            peer_id,
+            f"✅ Сохранено: {target}\nРазмер: {format_size(target.stat().st_size)}",
+        )
+
+    async def _download_attachment(self, attachment: dict) -> tuple[bytes, str, int]:
+        kind = attachment.get("type")
+        if kind == "doc":
+            doc = attachment.get("doc") or {}
+            url = str(doc.get("url") or "").strip()
+            if not url:
+                raise FileTransferError("VK не выдал ссылку на документ.")
+            filename = sanitize_filename(
+                str(doc.get("title") or f"doc_{doc.get('id', 'file')}")
+            )
+            ext = str(doc.get("ext") or "").strip()
+            if ext and not Path(filename).suffix:
+                filename = f"{filename}.{ext}"
+            size = int(doc.get("size") or 0)
+        elif kind == "photo":
+            photo = attachment.get("photo") or {}
+            sizes = [
+                size
+                for size in (photo.get("sizes") or [])
+                if isinstance(size, dict) and size.get("url")
+            ]
+            if not sizes:
+                raise FileTransferError("VK не выдал ссылку на фотографию.")
+            best = max(
+                sizes,
+                key=lambda size: int(size.get("width", 0)) * int(size.get("height", 0)),
+            )
+            url = str(best["url"])
+            filename = f"photo_{photo.get('id', 'file')}.jpg"
+            size = 0
+        else:
+            raise FileTransferError("Поддерживаются только документы и фотографии.")
+
+        data = await self._download_url(url)
+        return data, filename, size or len(data)
+
+    async def _download_url(self, url: str) -> bytes:
+        limit = int(self._config.bot.files.max_upload_mb * 1024 * 1024)
+        chunks: list[bytes] = []
+        total = 0
+        async with self._http().stream("GET", url) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                total += len(chunk)
+                if total > limit:
+                    raise FileTransferError(
+                        f"Файл слишком большой: больше {format_size(limit)}."
+                    )
+                chunks.append(chunk)
+        return b"".join(chunks)
+
+    async def _send_document(self, peer_id: int, path: Path, caption: str) -> None:
+        server = await self._api(
+            "docs.getMessagesUploadServer",
+            peer_id=peer_id,
+            type="doc",
+        )
+        upload_url = server.get("upload_url") if isinstance(server, dict) else None
+        if not upload_url:
+            raise VkApiError(0, "не удалось получить сервер загрузки VK")
+
+        with path.open("rb") as handle:
+            response = await self._http().post(
+                str(upload_url),
+                files={"file": (path.name, handle)},
+            )
+        response.raise_for_status()
+        payload = response.json()
+        upload_file = payload.get("file") if isinstance(payload, dict) else None
+        if not upload_file:
+            raise VkApiError(0, f"VK upload error: {payload}")
+
+        saved = await self._api("docs.save", file=upload_file, title=path.name)
+        if isinstance(saved, list):
+            doc = saved[0] if saved else {}
+        else:
+            doc = saved
+        if not isinstance(doc, dict) or "id" not in doc or "owner_id" not in doc:
+            raise VkApiError(0, f"VK docs.save error: {saved}")
+
+        attachment = f"doc{doc['owner_id']}_{doc['id']}"
+        await self._api(
+            "messages.send",
+            peer_id=peer_id,
+            message=caption,
+            attachment=attachment,
+            random_id=random.randint(1, 2**31 - 1),
+        )
 
     # --- обработка сообщений ---
 
@@ -514,7 +743,14 @@ class VkCursorBot:
         peer_id = int(message.get("peer_id", 0))
         from_id = int(message.get("from_id", 0))
         text = (message.get("text") or "").strip()
-        if not peer_id or not text:
+        attachments = [
+            item
+            for item in (message.get("attachments") or [])
+            if isinstance(item, dict)
+        ]
+        if not peer_id:
+            return
+        if not text and not attachments:
             return
 
         if not self._authorized(from_id):
@@ -522,8 +758,25 @@ class VkCursorBot:
             return
 
         if text.startswith("/") or text.lower() == "начать":
-            if await self._handle_command(peer_id, text):
+            if await self._handle_command(peer_id, text, attachments):
                 return
+
+        file_attachments = [
+            item
+            for item in attachments
+            if item.get("type") in {"doc", "photo"}
+        ]
+        if file_attachments:
+            await self._send(
+                peer_id,
+                "Чтобы сохранить файл на сервере, отправьте его с подписью:\n"
+                "/upload <каталог>\n"
+                "Например: /upload /var/log",
+            )
+            return
+
+        if not text:
+            return
 
         chat_key = self._chat_key(peer_id)
         lock = self._sessions.lock_for(chat_key)

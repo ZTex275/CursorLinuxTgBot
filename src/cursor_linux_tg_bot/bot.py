@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import textwrap
 import time
 from pathlib import Path
@@ -15,6 +16,17 @@ from telegram.request import HTTPXRequest
 from .agent_base import RunUpdate
 from .agent_factory import create_session_manager
 from .config import AppConfig, load_config, provider_status_text
+from .file_transfer import (
+    FileTransferError,
+    check_upload_size,
+    format_size,
+    is_upload_command,
+    list_directory,
+    parse_transfer_command,
+    read_file_preview,
+    resolve_upload_target,
+    validate_download,
+)
 from .git_helpers import append_push_note, format_commit_reply
 from .git_manager import GitManager
 from .message_queue import ChatKey, MessageQueue
@@ -197,6 +209,156 @@ class TelegramCursorBot:
             pass
         text = await list_models(self._config, query)
         await self._send_chunks(update, text)
+
+    async def _files_enabled(self, update: Update) -> bool:
+        if self._config.bot.files.enabled:
+            return True
+        if update.message:
+            await update.message.reply_text(
+                "Работа с файлами отключена в config.yaml (bot.files.enabled)."
+            )
+        return False
+
+    async def cmd_ls(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message or not await self._files_enabled(update):
+            return
+
+        raw = " ".join(context.args).strip()
+        try:
+            text = list_directory(raw, self._config.workspace, self._config.bot.files)
+        except FileTransferError as err:
+            text = f"❌ {err}"
+        await self._send_chunks(update, text)
+
+    async def cmd_cat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message or not await self._files_enabled(update):
+            return
+
+        raw = extract_command_payload(update.message.text or "", "cat") or " ".join(context.args).strip()
+        if not raw:
+            await update.message.reply_text("Использование: /cat <путь к файлу>")
+            return
+        try:
+            text = read_file_preview(raw, self._config.workspace, self._config.bot.files)
+        except FileTransferError as err:
+            text = f"❌ {err}"
+        await self._send_chunks(update, text)
+
+    async def cmd_download(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message or not await self._files_enabled(update):
+            return
+
+        raw = (
+            extract_command_payload(update.message.text or "", "download")
+            or " ".join(context.args).strip()
+        )
+        if not raw:
+            await update.message.reply_text("Использование: /download <путь к файлу>")
+            return
+        try:
+            path = validate_download(raw, self._config.workspace, self._config.bot.files)
+        except FileTransferError as err:
+            await update.message.reply_text(f"❌ {err}")
+            return
+
+        size = path.stat().st_size
+        await update.message.chat.send_action(ChatAction.UPLOAD_DOCUMENT)
+        try:
+            with path.open("rb") as handle:
+                await update.message.reply_document(
+                    document=handle,
+                    filename=path.name,
+                    caption=f"📄 {path} · {format_size(size)}",
+                )
+        except Exception as err:
+            logger.exception("telegram file download failed: %s", path)
+            await update.message.reply_text(f"❌ Не удалось отправить файл: {err}")
+
+    async def cmd_upload(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message or not await self._files_enabled(update):
+            return
+        await update.message.reply_text(
+            "Отправьте файл документом с подписью:\n"
+            "/upload <каталог на сервере>\n\n"
+            "Например: /upload /var/log\n"
+            "Если указать путь с расширением (`/upload src/data.txt`), файл будет сохранён под этим именем.\n"
+            "Без пути файл попадёт в корень workspace."
+        )
+
+    async def on_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message or not await self._files_enabled(update):
+            return
+
+        message = update.message
+        document = message.document
+        photo = message.photo[-1] if message.photo else None
+        if document is None and photo is None:
+            return
+
+        caption = (message.caption or "").strip()
+        if not is_upload_command(caption):
+            await message.reply_text(
+                "Чтобы сохранить файл на сервере, добавьте к нему подпись:\n"
+                "/upload <каталог>\n"
+                "Например: /upload /var/log"
+            )
+            return
+
+        _, raw = parse_transfer_command(caption)
+        if document is not None:
+            file_id = document.file_id
+            file_size = document.file_size or 0
+            filename = document.file_name or f"document_{document.file_unique_id}.bin"
+        else:
+            assert photo is not None
+            file_id = photo.file_id
+            file_size = photo.file_size or 0
+            filename = f"photo_{photo.file_unique_id}.jpg"
+
+        try:
+            check_upload_size(file_size, self._config.bot.files)
+            target = resolve_upload_target(
+                raw,
+                filename,
+                self._config.workspace,
+                restrict_to_workspace=self._config.bot.files.restrict_to_workspace,
+            )
+            tg_file = await context.bot.get_file(file_id)
+            tmp = target.with_name(target.name + ".part")
+            try:
+                await tg_file.download_to_drive(custom_path=str(tmp))
+                check_upload_size(tmp.stat().st_size, self._config.bot.files)
+                os.replace(tmp, target)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
+        except FileTransferError as err:
+            await message.reply_text(f"❌ {err}")
+            return
+        except Exception as err:
+            logger.exception("telegram file upload failed")
+            await message.reply_text(f"❌ Не удалось сохранить файл: {err}")
+            return
+
+        size = target.stat().st_size
+        await message.reply_text(
+            f"✅ Сохранено: {target}\nРазмер: {format_size(size)}"
+        )
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
@@ -698,6 +860,11 @@ class TelegramCursorBot:
         app.add_handler(CommandHandler("pull", self.cmd_pull))
         app.add_handler(CommandHandler("queue", self.cmd_queue))
         app.add_handler(CommandHandler("stop", self.cmd_stop))
+        app.add_handler(CommandHandler(["ls", "dir"], self.cmd_ls))
+        app.add_handler(CommandHandler(["cat", "view"], self.cmd_cat))
+        app.add_handler(CommandHandler(["download", "get", "dl"], self.cmd_download))
+        app.add_handler(CommandHandler(["upload", "put"], self.cmd_upload))
+        app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, self.on_file))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_message))
         app.add_handler(MessageHandler(filters.VOICE, self.on_voice))
         return app
