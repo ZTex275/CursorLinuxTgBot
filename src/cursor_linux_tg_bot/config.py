@@ -245,6 +245,7 @@ def provider_help_text() -> str:
 def commands_help_text() -> str:
     return (
         "Команды:\n"
+        "/start — эта справка со списком команд\n"
         "/new — новая сессия\n"
         "/mode agent|plan — режим работы\n"
         "/provider cursor|openrouter|openrouter_cli|opencode_cli — провайдер\n"

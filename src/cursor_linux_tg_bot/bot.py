@@ -8,7 +8,7 @@ import textwrap
 import time
 from pathlib import Path
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
@@ -807,13 +807,25 @@ class TelegramCursorBot:
 
     async def post_init(self, application: Application) -> None:
         self._tg_app = application
-        try:
-            await application.bot.set_my_commands(
-                [BotCommand(command=name, description=desc) for name, desc in BOT_COMMANDS]
+        commands = [BotCommand(command=name, description=desc) for name, desc in BOT_COMMANDS]
+        scopes = (
+            ("default", None),
+            ("all_private_chats", BotCommandScopeAllPrivateChats()),
+            ("all_group_chats", BotCommandScopeAllGroupChats()),
+        )
+        updated = 0
+        for scope_name, scope in scopes:
+            try:
+                await application.bot.set_my_commands(commands, scope=scope)
+                updated += 1
+            except Exception as exc:
+                logger.warning("Не удалось обновить подсказки команд (%s): %s", scope_name, exc)
+        if updated:
+            logger.info(
+                "Подсказки команд Telegram обновлены (%d шт., областей: %d)",
+                len(commands),
+                updated,
             )
-            logger.info("Подсказки команд Telegram обновлены (%d шт.)", len(BOT_COMMANDS))
-        except Exception as exc:
-            logger.warning("Не удалось обновить подсказки команд Telegram: %s", exc)
         await self._sessions.start()
         await self._queue.restore(lambda meta: int(meta["chat_id"]))
         if self._vk_bot is not None:
