@@ -8,14 +8,14 @@ import textwrap
 import time
 from pathlib import Path
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 from .agent_base import RunUpdate
 from .agent_factory import create_session_manager
-from .config import AppConfig, commands_help_text, load_config, provider_status_text
+from .config import BOT_COMMANDS, AppConfig, commands_help_text, load_config, provider_status_text
 from .file_transfer import (
     FileTransferError,
     check_upload_size,
@@ -807,6 +807,13 @@ class TelegramCursorBot:
 
     async def post_init(self, application: Application) -> None:
         self._tg_app = application
+        try:
+            await application.bot.set_my_commands(
+                [BotCommand(command=name, description=desc) for name, desc in BOT_COMMANDS]
+            )
+            logger.info("Подсказки команд Telegram обновлены (%d шт.)", len(BOT_COMMANDS))
+        except Exception as exc:
+            logger.warning("Не удалось обновить подсказки команд Telegram: %s", exc)
         await self._sessions.start()
         await self._queue.restore(lambda meta: int(meta["chat_id"]))
         if self._vk_bot is not None:
