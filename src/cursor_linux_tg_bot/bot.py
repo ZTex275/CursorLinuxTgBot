@@ -15,7 +15,7 @@ from telegram.request import HTTPXRequest
 
 from .agent_base import RunUpdate
 from .agent_factory import create_session_manager
-from .config import AppConfig, load_config, provider_status_text
+from .config import AppConfig, commands_help_text, load_config, provider_status_text
 from .file_transfer import (
     FileTransferError,
     check_upload_size,
@@ -116,7 +116,8 @@ class TelegramCursorBot:
             await self._deny(update)
             return
         if update.message:
-            await update.message.reply_text(self._config.bot.welcome_message)
+            text = f"{self._config.bot.welcome_message.rstrip()}\n\n{commands_help_text()}"
+            await update.message.reply_text(text)
 
     async def cmd_new(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):

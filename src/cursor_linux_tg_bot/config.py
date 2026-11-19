@@ -221,6 +221,30 @@ def provider_help_text() -> str:
     return "Использование: /provider cursor | openrouter | openrouter_cli | opencode_cli"
 
 
+def commands_help_text() -> str:
+    return (
+        "Команды:\n"
+        "/new — новая сессия\n"
+        "/mode agent|plan — режим работы\n"
+        "/provider cursor|openrouter|openrouter_cli|opencode_cli — провайдер\n"
+        "/model <модель> — сменить модель\n"
+        "/models [фильтр] — список моделей\n"
+        "/status — текущие настройки\n"
+        "/queue — размер очереди\n"
+        "/stop — прервать задачу и очистить очередь\n"
+        "/commit [сообщение] — зафиксировать изменения в git\n"
+        "/undo — откатить последнее сообщение\n"
+        "/git — статус репозитория\n"
+        "/push — отправить изменения на GitHub\n"
+        "/pull — получить изменения с GitHub\n"
+        "/ls [путь] — список каталога (алиасы: /dir)\n"
+        "/cat <путь> — показать файл (алиасы: /view)\n"
+        "/download <путь> — скачать файл (алиасы: /get, /dl)\n"
+        "/upload <каталог> — загрузить файл с подписью (алиасы: /put)\n"
+        "Голосовые сообщения распознаются и выполняются как задачи."
+    )
+
+
 def provider_status_text(config: AppConfig) -> str:
     available = ", ".join(config.configured_providers()) or "нет"
     return (

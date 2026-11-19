@@ -17,7 +17,7 @@ import httpx
 
 from .agent_base import RunUpdate
 from .agent_factory import create_session_manager
-from .config import AppConfig, provider_status_text
+from .config import AppConfig, commands_help_text, provider_status_text
 from .file_transfer import (
     FileTransferError,
     check_upload_size,
@@ -175,7 +175,8 @@ class VkCursorBot:
         chat_key = self._chat_key(peer_id)
 
         if command in {"/start", "начать"}:
-            await self._send(peer_id, self._config.bot.welcome_message)
+            text = f"{self._config.bot.welcome_message.rstrip()}\n\n{commands_help_text()}"
+            await self._send(peer_id, text)
         elif command == "/new":
             await self._sessions.reset_chat(chat_key)
             await self._send(peer_id, f"Новая сессия {self._config.provider_label}. История и git-чекпоинт сброшены.")
