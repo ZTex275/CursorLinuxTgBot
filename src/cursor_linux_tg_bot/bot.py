@@ -45,6 +45,9 @@ from .vk_bot import VkCursorBot
 
 logger = logging.getLogger(__name__)
 
+_SHELL_TIMEOUT_SEC = 120.0
+_MAX_SHELL_OUTPUT = 20000
+
 
 class TelegramCursorBot:
     def __init__(
@@ -232,6 +235,69 @@ class TelegramCursorBot:
             text = list_directory(raw, self._config.workspace, self._config.bot.files)
         except FileTransferError as err:
             text = f"❌ {err}"
+        if not raw:
+            text += (
+                "\n\nПодсказка: /ls <путь> — можно смотреть любой каталог, "
+                "например /ls /root или /ls .."
+            )
+        await self._send_chunks(update, text)
+
+    async def cmd_sh(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message:
+            return
+
+        command = " ".join(context.args).strip()
+        if not command:
+            await update.message.reply_text(
+                "Использование: /sh <команда>\n"
+                "Например: /sh ls /root или /sh df -h\n"
+                "Рабочая директория — workspace, но абсолютные пути доступны."
+            )
+            return
+
+        try:
+            await update.message.chat.send_action(ChatAction.TYPING)
+        except Exception:
+            pass
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                cwd=self._config.workspace,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as err:
+            await update.message.reply_text(f"❌ Не удалось запустить команду: {err}")
+            return
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=_SHELL_TIMEOUT_SEC
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            await update.message.reply_text(
+                f"❌ Таймаут {_SHELL_TIMEOUT_SEC:.0f}с: команда прервана"
+            )
+            return
+
+        out = (stdout or b"").decode(errors="replace")
+        err = (stderr or b"").decode(errors="replace")
+        code = proc.returncode or 0
+        parts = [f"exit_code={code}"]
+        if out:
+            parts.append(out)
+        if err:
+            parts.append(f"stderr:\n{err}")
+        text = "\n".join(parts)
+        if len(text) > _MAX_SHELL_OUTPUT:
+            text = text[-_MAX_SHELL_OUTPUT:]
+            text = "… [обрезано]\n" + text
         await self._send_chunks(update, text)
 
     async def cmd_cat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -881,6 +947,7 @@ class TelegramCursorBot:
         app.add_handler(CommandHandler("queue", self.cmd_queue))
         app.add_handler(CommandHandler("stop", self.cmd_stop))
         app.add_handler(CommandHandler(["ls", "dir"], self.cmd_ls))
+        app.add_handler(CommandHandler(["sh", "exec", "cmd"], self.cmd_sh))
         app.add_handler(CommandHandler(["cat", "view"], self.cmd_cat))
         app.add_handler(CommandHandler(["download", "get", "dl"], self.cmd_download))
         app.add_handler(CommandHandler(["upload", "put"], self.cmd_upload))

@@ -38,6 +38,14 @@ def default_system_prefix() -> str:
     )
 
 
+def workspace_access_hint() -> str:
+    return (
+        "Доступ к файловой системе не ограничен workspace: можно выполнять команды и читать "
+        "любые абсолютные пути на сервере (например, ls /root, ls /etc, /var/log). "
+        "workspace — только стартовая директория."
+    )
+
+
 def reload_agent_hint() -> str:
     if is_windows():
         return (

@@ -11,7 +11,7 @@ from typing import AsyncIterator
 from .agent_base import RunUpdate
 from .config import OpenRouterCliConfig
 from .git_manager import GitCheckpoint
-from .platform import is_binary_available, resolve_binary
+from .platform import is_binary_available, resolve_binary, workspace_access_hint
 from .session_store import ChatKey, ChatSession, SessionStore
 
 logger = logging.getLogger(__name__)
@@ -153,7 +153,8 @@ class OpenRouterCliSessionManager:
             "role": "system",
             "content": (
                 f"{self._system_prefix}\n\n"
-                f"Рабочая директория (workspace): {self._workspace}{plan_note}"
+                f"Рабочая директория (workspace): {self._workspace}\n"
+                f"{workspace_access_hint()}{plan_note}"
             ),
         }
 

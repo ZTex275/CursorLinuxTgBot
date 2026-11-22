@@ -13,7 +13,7 @@ import httpx
 from .agent_base import RunUpdate
 from .config import OpenRouterConfig
 from .session_store import ChatKey, ChatSession, SessionStore
-from .platform import shell_tool_description, shell_tool_param_description
+from .platform import shell_tool_description, shell_tool_param_description, workspace_access_hint
 from .textutil import stage_from_tool_call
 
 logger = logging.getLogger(__name__)
@@ -130,6 +130,7 @@ class OpenRouterSessionManager:
             "content": (
                 f"{self._system_prefix}\n\n"
                 f"Рабочая директория (workspace): {self._workspace}\n"
+                f"{workspace_access_hint()}\n"
                 "Используй инструменты shell, read_file, write_file, list_dir для выполнения задач на сервере."
             ),
         }
