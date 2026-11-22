@@ -39,7 +39,19 @@ def plain_text(text: str) -> str:
     return result
 
 
+def sanitize_text(text: str) -> str:
+    """Заменяет невалидные байты (surrogateescape) в именах файлов и выводе."""
+    if not text:
+        return text
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
 def split_message(text: str, limit: int) -> list[str]:
+    text = sanitize_text(text or "")
     if len(text) <= limit:
         return [text]
     chunks: list[str] = []
