@@ -28,6 +28,29 @@ _STATUS_LINE_RE = re.compile(r"^>\s+\S+\s+·\s+\S+$")
 _READ_CHUNK = 64 * 1024
 _ERROR_TAIL = 8000
 
+_LIMIT_ERROR_MARKERS = (
+    "free usage limit",
+    "free usage exceeded",
+    "usage limit reached",
+    "usage limit exceeded",
+    "quota exceeded",
+    "insufficient quota",
+    "insufficient credits",
+    "credit balance",
+    "rate limit reached",
+    "too many requests",
+)
+_LIMIT_ERROR_MESSAGE = (
+    "Бесплатный лимит OpenCode исчерпан, задача не выполнена.\n"
+    "Продолжить можно позже, когда лимит обновится.\n"
+    "Если нужно срочно, подключите OpenCode Go: https://opencode.ai/go"
+)
+
+
+def _is_limit_error(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _LIMIT_ERROR_MARKERS)
+
 
 def _strip_ansi(text: str) -> str:
     return _OSC_RE.sub("", _ANSI_RE.sub("", text))
@@ -444,13 +467,26 @@ class OpenCodeCliSessionManager:
                     cancelled=True,
                 )
                 return
+            if parser.error:
+                if _is_limit_error(parser.error):
+                    yield RunUpdate(text=final_text, done=True, error=_LIMIT_ERROR_MESSAGE)
+                else:
+                    yield RunUpdate(
+                        text=final_text,
+                        done=True,
+                        error=f"OpenCode CLI: {parser.error}",
+                    )
+                return
             if code != 0:
-                reason = parser.error or _strip_ansi(raw_buffer)[-_ERROR_TAIL:]
-                yield RunUpdate(
-                    text=final_text,
-                    done=True,
-                    error=f"OpenCode CLI завершился с кодом {code}: {reason}",
-                )
+                reason = _strip_ansi(raw_buffer)[-_ERROR_TAIL:]
+                if _is_limit_error(reason):
+                    yield RunUpdate(text=final_text, done=True, error=_LIMIT_ERROR_MESSAGE)
+                else:
+                    yield RunUpdate(
+                        text=final_text,
+                        done=True,
+                        error=f"OpenCode CLI завершился с кодом {code}: {reason}",
+                    )
                 return
             yield final_text or "Готово."
             return
@@ -458,6 +494,10 @@ class OpenCodeCliSessionManager:
         cleaned = _clean_opencode_output(raw_buffer)
         if was_cancelled:
             yield RunUpdate(text=cleaned or "Остановлено.", done=True, cancelled=True)
+            return
+
+        if _is_limit_error(raw_buffer):
+            yield RunUpdate(text="", done=True, error=_LIMIT_ERROR_MESSAGE)
             return
 
         if code != 0 and not cleaned:
