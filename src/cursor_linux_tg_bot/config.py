@@ -23,6 +23,7 @@ PROVIDER_LABELS = {
 BOT_COMMANDS = (
     ("start", "Справка и список команд"),
     ("new", "Новая сессия"),
+    ("topic", "Создать новый топик-диалог (в группе)"),
     ("mode", "Режим работы: agent или plan"),
     ("provider", "Сменить провайдера"),
     ("model", "Сменить модель"),
@@ -247,7 +248,8 @@ def commands_help_text() -> str:
     return (
         "Команды:\n"
         "/start — эта справка со списком команд\n"
-        "/new — новая сессия\n"
+        "/new — новая сессия (в текущем чате или топике)\n"
+        "/topic [название] — создать новый топик-диалог (в группе с топиками)\n"
         "/mode agent|plan — режим работы\n"
         "/provider cursor|openrouter|openrouter_cli|opencode_cli — провайдер\n"
         "/model <модель> — сменить модель\n"

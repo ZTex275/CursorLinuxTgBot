@@ -6,6 +6,7 @@ import logging
 import os
 import textwrap
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from telegram import BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats, Update
@@ -49,6 +50,12 @@ _SHELL_TIMEOUT_SEC = 120.0
 _MAX_SHELL_OUTPUT = 20000
 
 
+@dataclass
+class _RestoredMessage:
+    chat_id: int
+    thread_id: int | None = None
+
+
 class TelegramCursorBot:
     def __init__(
         self,
@@ -90,16 +97,24 @@ class TelegramCursorBot:
             else None
         )
 
-    async def _notify_queue_error(self, payload: Update | int, err: BaseException) -> None:
+    async def _notify_queue_error(
+        self, payload: Update | int | _RestoredMessage, err: BaseException
+    ) -> None:
         text = format_queue_error(err, max_length=self._config.bot.max_reply_length)
         if isinstance(payload, Update):
             if payload.message:
                 await self._send_chunks(payload, text)
             return
+        if isinstance(payload, _RestoredMessage):
+            chat_id = payload.chat_id
+            thread_id = payload.thread_id
+        else:
+            chat_id = payload
+            thread_id = None
         if self._tg_app is not None:
             bot = self._tg_app.bot
             for chunk in split_message(text, self._config.bot.max_reply_length):
-                await bot.send_message(payload, chunk)
+                await bot.send_message(chat_id, chunk, message_thread_id=thread_id)
 
     async def _authorized(self, update: Update) -> bool:
         user = update.effective_user
@@ -114,6 +129,20 @@ class TelegramCursorBot:
         if update.message:
             await update.message.reply_text("Доступ запрещён. Добавьте свой Telegram user id в config.yaml.")
 
+    @staticmethod
+    def _thread_id(update: Update) -> int | None:
+        if update.message is not None:
+            return update.message.message_thread_id
+        return None
+
+    @staticmethod
+    def _make_session_key(chat_id: int, thread_id: int | None) -> ChatKey:
+        return chat_id if thread_id is None else f"{chat_id}:{thread_id}"
+
+    def _session_key(self, update: Update) -> ChatKey:
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        return self._make_session_key(chat_id, self._thread_id(update))
+
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
             await self._deny(update)
@@ -126,10 +155,54 @@ class TelegramCursorBot:
         if not await self._authorized(update):
             await self._deny(update)
             return
-        chat_id = update.effective_chat.id if update.effective_chat else 0
-        await self._sessions.reset_chat(chat_id)
+        chat_key = self._session_key(update)
+        await self._sessions.reset_chat(chat_key)
         if update.message:
             await update.message.reply_text(f"Новая сессия {self._config.provider_label}. История и git-чекпоинт сброшены.")
+
+    async def cmd_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message or update.effective_chat is None:
+            return
+
+        chat = update.effective_chat
+        if chat.type not in {"group", "supergroup"}:
+            await update.message.reply_text(
+                "Команда /topic работает в группе с включёнными топиками. "
+                "Добавьте бота в такую группу и выдайте право управлять топиками."
+            )
+            return
+        if not chat.is_forum:
+            await update.message.reply_text(
+                "В этой группе не включены топики. Включите «Темы» в настройках группы, "
+                "затем снова выполните /topic."
+            )
+            return
+
+        name = " ".join(context.args).strip() or time.strftime("Диалог %d.%m %H:%M")
+        name = name[:128]
+        try:
+            topic = await context.bot.create_forum_topic(chat_id=chat.id, name=name)
+        except Exception as err:
+            logger.exception("create forum topic failed")
+            await update.message.reply_text(
+                f"❌ Не удалось создать топик: {err}\n"
+                "Проверьте, что бот администратор с правом «Управление темами»."
+            )
+            return
+
+        await self._sessions.reset_chat(self._make_session_key(chat.id, topic.message_thread_id))
+        try:
+            await context.bot.send_message(
+                chat.id,
+                f"🧵 Топик «{name}» создан. Это отдельный диалог: у него своя история, "
+                "очередь и git-чекпоинт. Пишите задачи сюда.",
+                message_thread_id=topic.message_thread_id,
+            )
+        except Exception:
+            logger.exception("failed to send message into new topic")
 
     async def cmd_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
@@ -498,8 +571,8 @@ class TelegramCursorBot:
             return
         if not update.message:
             return
-        chat_id = update.effective_chat.id if update.effective_chat else 0
-        pending = self._queue.size(chat_id)
+        chat_key = self._session_key(update)
+        pending = self._queue.size(chat_key)
         if pending == 0:
             await update.message.reply_text("Очередь пуста.")
         else:
@@ -548,8 +621,8 @@ class TelegramCursorBot:
             return
         if not update.message:
             return
-        chat_id = update.effective_chat.id if update.effective_chat else 0
-        msg = await self._stop_chat(chat_id)
+        chat_key = self._session_key(update)
+        msg = await self._stop_chat(chat_key)
         await update.message.reply_text(msg)
 
     async def cmd_commit(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -565,7 +638,7 @@ class TelegramCursorBot:
             await update.message.reply_text("workspace не является git-репозиторием")
             return
 
-        chat_id = update.effective_chat.id if update.effective_chat else 0
+        chat_key = self._session_key(update)
         full_text = update.message.text or ""
         payload = extract_command_payload(full_text, "commit")
         if payload:
@@ -573,7 +646,7 @@ class TelegramCursorBot:
         elif context.args:
             message = " ".join(context.args)
         else:
-            session = self._sessions.load_session(chat_id)
+            session = self._sessions.load_session(chat_key)
             message = session.last_user_message or ""
             if not message:
                 await update.message.reply_text("Использование: /commit <сообщение>")
@@ -586,7 +659,7 @@ class TelegramCursorBot:
 
         result = await self._git.commit(message)
         if result.ok:
-            self._sessions.clear_git_checkpoint(chat_id)
+            self._sessions.clear_git_checkpoint(chat_key)
         await update.message.reply_text(
             await format_commit_reply(self._git, result, self._config.git)
         )
@@ -604,13 +677,13 @@ class TelegramCursorBot:
             await update.message.reply_text("workspace не является git-репозиторием")
             return
 
-        chat_id = update.effective_chat.id if update.effective_chat else 0
-        session = self._sessions.load_session(chat_id)
+        chat_key = self._session_key(update)
+        session = self._sessions.load_session(chat_key)
         if not session.git_checkpoint:
             await update.message.reply_text("Нет точки отката для последнего сообщения.")
             return
 
-        lock = self._sessions.lock_for(chat_id)
+        lock = self._sessions.lock_for(chat_key)
         if lock.locked():
             await update.message.reply_text("Подождите — сейчас выполняется задача из очереди.")
             return
@@ -623,7 +696,7 @@ class TelegramCursorBot:
                 await update.message.reply_text(f"❌ Откат не удался: {err}")
                 return
 
-            self._sessions.clear_git_checkpoint(chat_id)
+            self._sessions.clear_git_checkpoint(chat_key)
             await update.message.reply_text(f"✅ {msg}")
 
     async def _send_chunks(self, update: Update, text: str) -> None:
@@ -639,6 +712,7 @@ class TelegramCursorBot:
         stream,
         *,
         chat_id: int | None = None,
+        thread_id: int | None = None,
         status=None,
         started_at: float | None = None,
         initial_stage: str | None = "Запуск агента",
@@ -647,6 +721,7 @@ class TelegramCursorBot:
             if not update.message:
                 return None
             chat_id = update.effective_chat.id if update.effective_chat else 0
+            thread_id = update.message.message_thread_id
 
             async def send_text(text: str) -> None:
                 await self._send_chunks(update, text)
@@ -657,7 +732,7 @@ class TelegramCursorBot:
 
             async def send_text(text: str) -> None:
                 for chunk in split_message(text, self._config.bot.max_reply_length):
-                    await bot.send_message(chat_id, chunk)
+                    await bot.send_message(chat_id, chunk, message_thread_id=thread_id)
 
         task_started_at = started_at if started_at is not None else time.monotonic()
         if status is None:
@@ -669,6 +744,7 @@ class TelegramCursorBot:
                 status = await self._tg_app.bot.send_message(
                     chat_id,
                     working_status(self._config.provider_label, task_started_at, initial_stage),
+                    message_thread_id=thread_id,
                 )
             else:
                 return None
@@ -711,11 +787,15 @@ class TelegramCursorBot:
         logger.warning("auto-commit failed: %s", result.message)
         return None
 
-    async def _process_user_message(self, payload: Update | int, user_text: str) -> None:
+    async def _process_user_message(
+        self, payload: Update | int | _RestoredMessage, user_text: str
+    ) -> None:
+        thread_id: int | None = None
         if isinstance(payload, Update):
             if not payload.message:
                 return
             chat_id = payload.effective_chat.id if payload.effective_chat else 0
+            thread_id = payload.message.message_thread_id
             update = payload
 
             async def reply_text(text: str):
@@ -723,6 +803,22 @@ class TelegramCursorBot:
 
             async def send_typing() -> None:
                 await update.message.chat.send_action(ChatAction.TYPING)
+        elif isinstance(payload, _RestoredMessage):
+            chat_id = payload.chat_id
+            thread_id = payload.thread_id
+            update = None
+            if self._tg_app is None:
+                logger.error("cannot process restored telegram message: bot not initialized")
+                return
+            bot = self._tg_app.bot
+
+            async def reply_text(text: str):
+                return await bot.send_message(chat_id, text, message_thread_id=thread_id)
+
+            async def send_typing() -> None:
+                await bot.send_chat_action(
+                    chat_id, ChatAction.TYPING, message_thread_id=thread_id
+                )
         else:
             chat_id = payload
             update = None
@@ -736,6 +832,8 @@ class TelegramCursorBot:
 
             async def send_typing() -> None:
                 await bot.send_chat_action(chat_id, ChatAction.TYPING)
+
+        chat_key = self._make_session_key(chat_id, thread_id)
 
         started_at = time.monotonic()
         status = await reply_text(
@@ -757,7 +855,7 @@ class TelegramCursorBot:
         )
         start_sha: str | None = None
 
-        lock = self._sessions.lock_for(chat_id)
+        lock = self._sessions.lock_for(chat_key)
         async with lock:
             if self._config.git.enabled:
                 if not await self._git.is_repo():
@@ -767,8 +865,8 @@ class TelegramCursorBot:
                 else:
                     try:
                         await set_stage("Создаю git-чекпоинт")
-                        checkpoint = await self._git.create_checkpoint(chat_id)
-                        self._sessions.set_git_checkpoint(chat_id, checkpoint, user_text)
+                        checkpoint = await self._git.create_checkpoint(chat_key)
+                        self._sessions.set_git_checkpoint(chat_key, checkpoint, user_text)
                         if self._reloader.enabled():
                             start_sha = checkpoint.head_sha if checkpoint else await self._reloader.snapshot_sha(self._git)
                     except Exception as err:
@@ -780,11 +878,12 @@ class TelegramCursorBot:
 
             await send_typing()
             await set_stage("Запуск агента")
-            stream = self._sessions.run_prompt(chat_id, prompt, mode=self._config.mode)
+            stream = self._sessions.run_prompt(chat_key, prompt, mode=self._config.mode)
             final = await self._stream_reply(
                 update,
                 stream,
                 chat_id=chat_id,
+                thread_id=thread_id,
                 status=status,
                 started_at=started_at,
                 initial_stage="Запуск агента",
@@ -807,13 +906,19 @@ class TelegramCursorBot:
             return
 
         chat_id = update.effective_chat.id if update.effective_chat else 0
-        lock = self._sessions.lock_for(chat_id)
+        thread_id = self._thread_id(update)
+        chat_key = self._make_session_key(chat_id, thread_id)
+        lock = self._sessions.lock_for(chat_key)
         status = await self._queue.enqueue(
-            chat_id,
+            chat_key,
             update,
             user_text,
             running=lock.locked(),
-            persist_meta={"type": "telegram", "chat_id": chat_id},
+            persist_meta={
+                "type": "telegram",
+                "chat_id": chat_id,
+                "thread_id": thread_id,
+            },
         )
         if status:
             await update.message.reply_text(status)
@@ -893,7 +998,12 @@ class TelegramCursorBot:
                 updated,
             )
         await self._sessions.start()
-        await self._queue.restore(lambda meta: int(meta["chat_id"]))
+        await self._queue.restore(
+            lambda meta: _RestoredMessage(
+                int(meta["chat_id"]),
+                int(meta["thread_id"]) if meta.get("thread_id") is not None else None,
+            )
+        )
         if self._vk_bot is not None:
             await self._vk_bot.restore_queue()
             self._vk_task = asyncio.create_task(self._vk_bot.poll_loop())
@@ -934,6 +1044,7 @@ class TelegramCursorBot:
         )
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("new", self.cmd_new))
+        app.add_handler(CommandHandler("topic", self.cmd_topic))
         app.add_handler(CommandHandler("mode", self.cmd_mode))
         app.add_handler(CommandHandler("provider", self.cmd_provider))
         app.add_handler(CommandHandler("model", self.cmd_model))
