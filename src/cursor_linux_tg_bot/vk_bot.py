@@ -7,6 +7,7 @@ group_id — числовой id сообщества.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import textwrap
@@ -89,6 +90,8 @@ class VkCursorBot:
         )
         self._queue.set_handler(self._process_user_message, on_error=self._notify_queue_error)
         self._client: httpx.AsyncClient | None = None
+        self._state_path = config.sessions_dir.parent / "vk_state.json"
+        self._last_ts: str | None = None
 
     @staticmethod
     def _chat_key(peer_id: int) -> str:
@@ -105,14 +108,45 @@ class VkCursorBot:
                 write=self._vk.read_timeout,
                 pool=self._vk.connect_timeout,
             )
-            self._client = httpx.AsyncClient(timeout=timeout, proxy=self._vk.proxy or None)
+            self._client = httpx.AsyncClient(
+                timeout=timeout,
+                proxy=self._vk.proxy or None,
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=10,
+                    keepalive_expiry=60,
+                ),
+            )
         return self._client
 
     async def _api(self, method: str, **params) -> dict | int:
         params.setdefault("v", VK_API_VERSION)
         params.setdefault("access_token", self._vk.token)
-        response = await self._http().post(f"{VK_API}/{method}", data=params)
-        data = response.json()
+        attempts = 3
+        last_error: Exception | None = None
+        data: dict | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self._http().post(f"{VK_API}/{method}", data=params)
+                data = response.json()
+                last_error = None
+                break
+            except (httpx.TransportError, ValueError) as err:
+                last_error = err
+                if attempt >= attempts:
+                    break
+                delay = min(2 ** (attempt - 1), 5)
+                logger.warning(
+                    "VK API %s: %s — повтор через %ss (%d/%d)",
+                    method,
+                    err or type(err).__name__,
+                    delay,
+                    attempt,
+                    attempts - 1,
+                )
+                await asyncio.sleep(delay)
+        if last_error is not None or data is None:
+            raise last_error or VkApiError(0, "пустой ответ VK API")
         if "error" in data:
             err = data["error"]
             raise VkApiError(int(err.get("error_code", 0)), err.get("error_msg", "unknown VK error"))
@@ -796,19 +830,49 @@ class VkCursorBot:
 
     # --- long poll ---
 
-    async def _get_long_poll_server(self) -> tuple[str, str, str]:
+    def _load_ts(self) -> str | None:
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        ts = data.get("ts") if isinstance(data, dict) else None
+        return str(ts) if ts else None
+
+    def _save_ts(self, ts: str | None) -> None:
+        if not ts or ts == self._last_ts:
+            return
+        self._last_ts = ts
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"ts": ts}), encoding="utf-8")
+            tmp.replace(self._state_path)
+        except OSError:
+            logger.debug("VK: не удалось сохранить ts", exc_info=True)
+
+    async def _refresh_long_poll_server(
+        self, prev_ts: str | None
+    ) -> tuple[str, str, str]:
         response = await self._api("groups.getLongPollServer", group_id=self._vk.group_id)
         assert isinstance(response, dict)
-        return response["server"], response["key"], response["ts"]
+        server = str(response["server"])
+        key = str(response["key"])
+        new_ts = str(response["ts"])
+        # Продолжаем с прежнего ts, чтобы не потерять события, пришедшие
+        # во время переподключения (VK отдаёт их при следующем a_check).
+        return server, key, prev_ts or new_ts
 
     async def poll_loop(self) -> None:
         logger.info("VK bot: long poll started (group %s)", self._vk.group_id)
-        server = key = ts = None
+        server = key = None
+        ts = self._load_ts()
+        if ts:
+            logger.info("VK bot: продолжаю long poll с ts=%s", ts)
 
         while True:
             try:
-                if server is None:
-                    server, key, ts = await self._get_long_poll_server()
+                if server is None or key is None:
+                    server, key, ts = await self._refresh_long_poll_server(ts)
 
                 response = await self._http().get(
                     server,
@@ -819,12 +883,15 @@ class VkCursorBot:
                 if "failed" in data:
                     fail = data["failed"]
                     if fail == 1:
-                        ts = data.get("ts", ts)
+                        # Устаревший ts: VK прислал актуальный — принимаем его.
+                        ts = str(data.get("ts", ts))
+                        self._save_ts(ts)
                     else:
-                        server = None  # ключ устарел — переполучить сервер
+                        logger.warning("VK long poll: failed=%s — переподключаюсь", fail)
+                        server = key = None  # ключ устарел — переполучить сервер
                     continue
 
-                ts = data.get("ts", ts)
+                ts = str(data.get("ts", ts))
                 for update in data.get("updates", []):
                     if update.get("type") != "message_new":
                         continue
@@ -833,6 +900,8 @@ class VkCursorBot:
                         await self._on_message(message)
                     except Exception:
                         logger.exception("VK message handling failed")
+                # Сохраняем ts после обработки, чтобы пережить перезапуск.
+                self._save_ts(ts)
 
             except asyncio.CancelledError:
                 raise
@@ -843,10 +912,14 @@ class VkCursorBot:
                 else:
                     logger.warning("VK long poll error: %s — retry in 10s", err)
                     await asyncio.sleep(10)
-                server = None
+                server = key = None
             except (httpx.HTTPError, ValueError) as err:
-                logger.warning("VK long poll error: %s — retry in 10s", err)
-                server = None
+                logger.warning(
+                    "VK long poll error: %s — retry in 10s",
+                    err or type(err).__name__,
+                )
+                # НЕ сбрасываем server/key/ts: иначе события, пришедшие
+                # за время сбоя, будут пропущены после переподключения.
                 await asyncio.sleep(10)
 
     async def run_standalone(self) -> None:

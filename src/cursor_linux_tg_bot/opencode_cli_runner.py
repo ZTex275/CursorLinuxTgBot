@@ -423,6 +423,15 @@ class OpenCodeCliSessionManager:
                     # В JSON-режиме весь вывод не нужен — держим только хвост для ошибок.
                     raw_buffer = raw_buffer[-_ERROR_TAIL * 2 :]
 
+                # OpenCode при исчерпании лимита печатает ошибку, но процесс
+                # может не завершиться и висеть без вывода. Ловим это сразу,
+                # не дожидаясь таймаута.
+                if _is_limit_error(raw_buffer[-_ERROR_TAIL:]):
+                    proc.kill()
+                    await proc.wait()
+                    yield RunUpdate(text="", done=True, error=_LIMIT_ERROR_MESSAGE)
+                    return
+
                 if parser is None:
                     cleaned = _clean_opencode_output(raw_buffer)
                     now = time.monotonic()
@@ -441,11 +450,45 @@ class OpenCodeCliSessionManager:
                     update = parser.feed(line)
                     if update is not None:
                         yield update
+                    if parser.error:
+                        # Терминальная ошибка OpenCode: процесс может зависнуть,
+                        # поэтому не ждём его завершения.
+                        proc.kill()
+                        await proc.wait()
+                        if _is_limit_error(parser.error):
+                            yield RunUpdate(
+                                text=parser.final_text(),
+                                done=True,
+                                error=_LIMIT_ERROR_MESSAGE,
+                            )
+                        else:
+                            yield RunUpdate(
+                                text=parser.final_text(),
+                                done=True,
+                                error=f"OpenCode CLI: {parser.error}",
+                            )
+                        return
 
             if parser is not None and line_buffer.strip():
                 update = parser.feed(line_buffer)
                 if update is not None:
                     yield update
+                if parser.error:
+                    proc.kill()
+                    await proc.wait()
+                    if _is_limit_error(parser.error):
+                        yield RunUpdate(
+                            text=parser.final_text(),
+                            done=True,
+                            error=_LIMIT_ERROR_MESSAGE,
+                        )
+                    else:
+                        yield RunUpdate(
+                            text=parser.final_text(),
+                            done=True,
+                            error=f"OpenCode CLI: {parser.error}",
+                        )
+                    return
 
             code = await proc.wait()
         except Exception as err:
