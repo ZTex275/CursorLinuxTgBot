@@ -48,6 +48,9 @@ logger = logging.getLogger(__name__)
 
 _SHELL_TIMEOUT_SEC = 120.0
 _MAX_SHELL_OUTPUT = 20000
+_TOPIC_GONE_MARKERS = ("message thread not found", "topic_id_invalid", "topic not found")
+_TOPIC_PROBE_TEXT = "\u2060"
+_TOPIC_RECONCILE_MIN_AGE_SEC = 300.0
 
 
 @dataclass
@@ -76,6 +79,7 @@ class TelegramCursorBot:
         self._vk_task: asyncio.Task[None] | None = None
         self._tg_app: Application | None = None
         store = queue_store or QueueStore(config.sessions_dir.parent / "queue")
+        self._queue_store = store
         self._queue = MessageQueue(
             max_size=config.bot.max_queue_size,
             store=store,
@@ -103,6 +107,11 @@ class TelegramCursorBot:
         text = format_queue_error(err, max_length=self._config.bot.max_reply_length)
         if isinstance(payload, Update):
             if payload.message:
+                chat_id = payload.effective_chat.id if payload.effective_chat else 0
+                thread_id = payload.message.message_thread_id
+                if thread_id and self._is_topic_gone(err):
+                    await self._purge_topic_state(chat_id, thread_id)
+                    return
                 await self._send_chunks(payload, text)
             return
         if isinstance(payload, _RestoredMessage):
@@ -111,10 +120,104 @@ class TelegramCursorBot:
         else:
             chat_id = payload
             thread_id = None
+        if thread_id and self._is_topic_gone(err):
+            await self._purge_topic_state(chat_id, thread_id)
+            return
         if self._tg_app is not None:
             bot = self._tg_app.bot
             for chunk in split_message(text, self._config.bot.max_reply_length):
                 await bot.send_message(chat_id, chunk, message_thread_id=thread_id)
+
+    @staticmethod
+    def _is_topic_gone(err: BaseException) -> bool:
+        text = str(err).lower()
+        return any(marker in text for marker in _TOPIC_GONE_MARKERS)
+
+    def _topic_keys(self, chat_id: int | None = None) -> list[tuple[int, int]]:
+        keys: list[tuple[int, int]] = []
+        try:
+            paths = list(self._config.sessions_dir.glob("*.json"))
+        except OSError:
+            return keys
+        for path in paths:
+            stem = path.stem
+            if ":" not in stem:
+                continue
+            chat_part, thread_part = stem.rsplit(":", 1)
+            try:
+                topic_chat_id = int(chat_part)
+                thread_id = int(thread_part)
+            except ValueError:
+                continue
+            if chat_id is not None and topic_chat_id != chat_id:
+                continue
+            keys.append((topic_chat_id, thread_id))
+        return sorted(keys)
+
+    async def _purge_topic_state(self, chat_id: int, thread_id: int) -> None:
+        key = self._make_session_key(chat_id, thread_id)
+        removed = 0
+        try:
+            removed = self._queue.clear(key)
+            self._queue_store.clear_chat("telegram", key)
+        except Exception:
+            logger.exception("failed to clear queue for topic %s", key)
+        try:
+            await self._sessions.cancel_active(key)
+        except Exception:
+            logger.exception("failed to cancel active task for topic %s", key)
+        try:
+            await self._sessions.reset_chat(key)
+        except Exception:
+            logger.exception("failed to reset session for topic %s", key)
+        logger.info("Server state for topic %s cleared (queued messages: %d)", key, removed)
+
+    async def _probe_topic(self, bot, chat_id: int, thread_id: int) -> bool | None:
+        try:
+            message = await bot.send_message(
+                chat_id=chat_id,
+                text=_TOPIC_PROBE_TEXT,
+                message_thread_id=thread_id,
+                disable_notification=True,
+            )
+        except Exception as err:
+            if self._is_topic_gone(err):
+                return False
+            logger.warning("topic probe failed for %s:%s: %s", chat_id, thread_id, err)
+            return None
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message.message_id)
+        except Exception as err:
+            logger.warning(
+                "failed to delete topic probe message %s:%s: %s", chat_id, thread_id, err
+            )
+        return True
+
+    async def _reconcile_topics(self, bot) -> None:
+        for chat_id, thread_id in self._topic_keys():
+            if thread_id == 1:
+                continue
+            path = self._config.sessions_dir / f"{chat_id}:{thread_id}.json"
+            try:
+                age = time.time() - path.stat().st_mtime
+            except OSError:
+                age = 0.0
+            if age < _TOPIC_RECONCILE_MIN_AGE_SEC:
+                continue
+            alive = await self._probe_topic(bot, chat_id, thread_id)
+            if alive is False:
+                logger.info("Topic %s:%s no longer exists — cleaning server state", chat_id, thread_id)
+                await self._purge_topic_state(chat_id, thread_id)
+
+    async def on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        err = context.error
+        if err is not None and self._is_topic_gone(err) and isinstance(update, Update):
+            if update.effective_chat is not None and update.message is not None:
+                thread_id = update.message.message_thread_id
+                if thread_id:
+                    await self._purge_topic_state(update.effective_chat.id, thread_id)
+                    return
+        logger.error("Unhandled exception in handler", exc_info=err)
 
     async def _authorized(self, update: Update) -> bool:
         user = update.effective_user
@@ -203,6 +306,114 @@ class TelegramCursorBot:
             )
         except Exception:
             logger.exception("failed to send message into new topic")
+
+    async def cmd_topics(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message or update.effective_chat is None:
+            return
+
+        chat = update.effective_chat
+        filter_chat = chat.id if chat.type in {"group", "supergroup"} else None
+        keys = self._topic_keys(filter_chat)
+        if not keys:
+            await update.message.reply_text("Топиков с серверным состоянием нет.")
+            return
+
+        lines = ["Топики с серверным состоянием:"]
+        for topic_chat_id, thread_id in keys:
+            key = self._make_session_key(topic_chat_id, thread_id)
+            path = self._config.sessions_dir / f"{key}.json"
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            try:
+                session = self._sessions.load_session(key)
+            except Exception:
+                session = None
+            turns = session.turn_count if session is not None else 0
+            last = (session.last_user_message or "") if session is not None else ""
+            last = " ".join(last.split())
+            if len(last) > 60:
+                last = last[:57] + "…"
+            queued = self._queue.size(key)
+            label = (
+                str(thread_id)
+                if filter_chat is not None
+                else f"{topic_chat_id}:{thread_id}"
+            )
+            when = time.strftime("%d.%m %H:%M", time.localtime(mtime)) if mtime else "—"
+            parts = [f"{label} — {when}"]
+            if turns:
+                parts.append(f"ходов {turns}")
+            if queued:
+                parts.append(f"очередь {queued}")
+            if last:
+                parts.append(f"«{last}»")
+            lines.append(" | ".join(parts))
+        lines.append("Удалить топик и очистить состояние: /topicdelete <id>")
+        for chunk in split_message("\n".join(lines), self._config.bot.max_reply_length):
+            await update.message.reply_text(chunk)
+
+    async def cmd_topicdelete(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._authorized(update):
+            await self._deny(update)
+            return
+        if not update.message or update.effective_chat is None:
+            return
+
+        chat = update.effective_chat
+        if chat.type not in {"group", "supergroup"}:
+            await update.message.reply_text("Команда работает в группе с включёнными топиками.")
+            return
+        if not chat.is_forum:
+            await update.message.reply_text("В этой группе не включены топики.")
+            return
+
+        if context.args:
+            try:
+                thread_id = int(context.args[0])
+            except ValueError:
+                await update.message.reply_text("Использование: /topicdelete <id>. Список: /topics")
+                return
+        else:
+            thread_id = update.message.message_thread_id
+            if thread_id is None:
+                await update.message.reply_text(
+                    "Укажите id топика: /topicdelete <id>. Список: /topics"
+                )
+                return
+
+        current_thread = update.message.message_thread_id
+        if thread_id == 1:
+            await self._purge_topic_state(chat.id, thread_id)
+            await update.message.reply_text(
+                "General-топик нельзя удалить. Серверное состояние очищено."
+            )
+            return
+
+        already_gone = False
+        try:
+            await context.bot.delete_forum_topic(chat_id=chat.id, message_thread_id=thread_id)
+        except Exception as err:
+            if not self._is_topic_gone(err):
+                logger.exception("delete forum topic failed")
+                await update.message.reply_text(f"❌ Не удалось удалить топик: {err}")
+                return
+            already_gone = True
+
+        await self._purge_topic_state(chat.id, thread_id)
+        text = (
+            f"Топик {thread_id} уже удалён в Telegram. Серверное состояние очищено."
+            if already_gone
+            else f"Топик {thread_id} удалён. Серверное состояние очищено."
+        )
+        if thread_id == current_thread:
+            await context.bot.send_message(chat.id, text)
+        else:
+            await update.message.reply_text(text)
 
     async def cmd_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._authorized(update):
@@ -998,6 +1209,7 @@ class TelegramCursorBot:
                 updated,
             )
         await self._sessions.start()
+        await self._reconcile_topics(application.bot)
         await self._queue.restore(
             lambda meta: _RestoredMessage(
                 int(meta["chat_id"]),
@@ -1045,6 +1257,8 @@ class TelegramCursorBot:
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("new", self.cmd_new))
         app.add_handler(CommandHandler("topic", self.cmd_topic))
+        app.add_handler(CommandHandler("topics", self.cmd_topics))
+        app.add_handler(CommandHandler("topicdelete", self.cmd_topicdelete))
         app.add_handler(CommandHandler("mode", self.cmd_mode))
         app.add_handler(CommandHandler("provider", self.cmd_provider))
         app.add_handler(CommandHandler("model", self.cmd_model))
@@ -1065,6 +1279,7 @@ class TelegramCursorBot:
         app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, self.on_file))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_message))
         app.add_handler(MessageHandler(filters.VOICE, self.on_voice))
+        app.add_error_handler(self.on_error)
         return app
 
 
